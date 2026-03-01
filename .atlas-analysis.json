@@ -1,0 +1,115 @@
+{
+  "projectType": "saas",
+  "projectName": "Gorkie for Slack",
+  "projectDescription": "An AI-powered Slack assistant built with Vercel AI SDK that responds to mentions, DMs, and thread replies with intelligent responses.",
+  "theme": "palm",
+  "primaryColor": "#4A154B",
+  "lightColor": "#611f69",
+  "darkColor": "#1264a3",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "slack-setup"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/deployment",
+              "configuration/redis-setup",
+              "configuration/database-setup"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/ai-chat",
+              "features/code-sandbox",
+              "features/web-search",
+              "features/scheduled-tasks",
+              "features/slack-integration"
+            ]
+          },
+          {
+            "group": "AI Tools",
+            "pages": [
+              "tools/overview",
+              "tools/chat-tools",
+              "tools/task-tools",
+              "tools/sandbox-tools"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/architecture",
+              "advanced/e2b-sandbox",
+              "advanced/observability",
+              "advanced/rate-limiting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Development",
+        "groups": [
+          {
+            "group": "Development Guide",
+            "pages": [
+              "development/getting-started",
+              "development/code-style",
+              "development/project-structure",
+              "development/adding-tools"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/types",
+              "api/prompts",
+              "api/providers"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-powered conversation with Claude via Vercel AI SDK",
+    "Code execution in E2B sandboxes with persistent sessions per thread",
+    "Web search integration via Exa API",
+    "Scheduled tasks and reminders with cron expressions",
+    "Image generation and Mermaid diagram rendering",
+    "Thread summarization and conversation history",
+    "Rate limiting and caching with Redis",
+    "Observability with OpenTelemetry and Langfuse",
+    "Multiple AI model providers (Hack Club, OpenRouter)",
+    "Rich Slack integration with reactions, replies, and user info"
+  ],
+  "publicApiSurface": [
+    "reply - Send messages to Slack channels/threads",
+    "react - Add emoji reactions to messages",
+    "searchWeb - Search the web using Exa",
+    "sandbox - Execute code in E2B sandboxes",
+    "getUserInfo - Fetch Slack user information",
+    "scheduleTask - Create recurring tasks with cron",
+    "scheduleReminder - Schedule one-time reminders",
+    "cancelScheduledTask - Cancel scheduled tasks",
+    "listScheduledTasks - View all scheduled tasks",
+    "generateImage - Create images using AI",
+    "mermaid - Render Mermaid diagrams",
+    "summariseThread - Summarize conversation threads",
+    "readConversationHistory - Access message history",
+    "searchSlack - Search Slack messages",
+    "leaveChannel - Leave Slack channels",
+    "skip - Skip responding to a message"
+  ]
+}
