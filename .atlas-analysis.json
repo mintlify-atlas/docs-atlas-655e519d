@@ -100,6 +100,7 @@
     "searchWeb - Search the web using Exa",
     "sandbox - Execute code in E2B sandboxes",
     "getUserInfo - Fetch Slack user information",
+    "getWeather - Get current weather for any location",
     "scheduleTask - Create recurring tasks with cron",
     "scheduleReminder - Schedule one-time reminders",
     "cancelScheduledTask - Cancel scheduled tasks",

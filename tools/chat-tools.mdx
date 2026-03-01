@@ -161,6 +161,56 @@ Get detailed information about a Slack user by their user ID.
 
 ---
 
+### getWeather
+
+Get current weather information for a specific location using Open-Meteo API.
+
+<ParamField path="latitude" type="number" required>
+  Geographic latitude of the location (-90 to 90).
+</ParamField>
+
+<ParamField path="longitude" type="number" required>
+  Geographic longitude of the location (-180 to 180).
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  // Weather data from Open-Meteo API
+  current: {
+    temperature_2m: number;
+    // ... other current weather fields
+  };
+  hourly: {
+    temperature_2m: number[];
+    // ... other hourly forecast fields
+  };
+  daily: {
+    sunrise: string[];
+    sunset: string[];
+    // ... other daily fields
+  };
+  timezone: string;
+}
+// or
+{ success: false, error: "Failed to fetch weather" }
+```
+
+**Example usage:**
+```typescript
+// Get weather for San Francisco
+{ latitude: 37.7749, longitude: -122.4194 }
+
+// Get weather for London
+{ latitude: 51.5074, longitude: -0.1278 }
+```
+
+<Info>
+Weather data is provided by the free [Open-Meteo API](https://open-meteo.com/) and includes current conditions, hourly forecasts, and daily sunrise/sunset times.
+</Info>
+
+---
+
 ### readConversationHistory
 
 Read message history from a public Slack channel or thread.
