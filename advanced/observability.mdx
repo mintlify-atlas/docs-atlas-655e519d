@@ -1,0 +1,391 @@
+---
+title: 'Observability'
+description: 'Monitoring, tracing, and logging with OpenTelemetry, Langfuse, and Pino'
+---
+
+## Overview
+
+Gorkie implements comprehensive observability through:
+- **OpenTelemetry** - Distributed tracing
+- **Langfuse** - AI-specific observability
+- **Pino** - Structured logging
+
+## OpenTelemetry Setup
+
+OpenTelemetry is initialized at application startup:
+
+```typescript server/index.ts
+import { LangfuseSpanProcessor } from '@langfuse/otel';
+import { NodeSDK } from '@opentelemetry/sdk-node';
+
+const sdk = new NodeSDK({
+  spanProcessors: [new LangfuseSpanProcessor()],
+});
+
+sdk.start();
+```
+
+**Key Features:**
+- Automatic trace propagation across async operations
+- Spans are exported to Langfuse for analysis
+- Graceful shutdown on process exit
+
+### Error Handling
+
+Unhandled errors are captured and telemetry is flushed before exit:
+
+```typescript server/index.ts
+process.on('unhandledRejection', (reason) => {
+  logger.error({ error: reason }, 'Unhandled promise rejection');
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error({ error }, 'Uncaught exception');
+  sdk
+    .shutdown()
+    .catch((shutdownError: unknown) => {
+      logger.error(
+        { error: shutdownError },
+        'Failed to shutdown telemetry after uncaught exception'
+      );
+    })
+    .finally(() => {
+      process.exit(1);
+    });
+});
+```
+
+<Warning>
+Always ensure telemetry SDK is shut down gracefully to avoid losing traces.
+</Warning>
+
+## Langfuse Integration
+
+Langfuse provides AI-specific observability:
+
+### Automatic Tracing
+
+All AI SDK operations are automatically traced:
+
+```typescript server/lib/ai/agents/orchestrator.ts
+export const orchestratorAgent = ({ context, requestHints, files, stream }) =>
+  new ToolLoopAgent({
+    model: provider.languageModel('chat-model'),
+    // ...
+    experimental_telemetry: {
+      isEnabled: true,
+      functionId: 'orchestrator',
+    },
+  });
+```
+
+**What's Captured:**
+- Model calls (prompt, completion, tokens)
+- Tool executions (input, output, duration)
+- Agent reasoning steps
+- Error traces
+
+### Environment Variables
+
+Configure Langfuse with these environment variables:
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+### Viewing Traces
+
+1. Navigate to [Langfuse Dashboard](https://cloud.langfuse.com)
+2. Select your project
+3. View traces grouped by:
+   - **Session** - Full conversation thread
+   - **User** - Specific Slack user
+   - **Trace** - Individual message handling
+
+<Info>
+Langfuse automatically groups traces by `sessionId` (derived from Slack thread), making it easy to debug full conversations.
+</Info>
+
+## Structured Logging with Pino
+
+Gorkie uses **Pino** for high-performance structured logging:
+
+```typescript server/lib/logger.ts
+import pino from 'pino';
+
+const logger = pino(
+  {
+    level: logLevel,
+    timestamp: pino.stdTimeFunctions.isoTime,
+    serializers: { err: pino.stdSerializers.err },
+  },
+  transport
+);
+
+export default logger;
+```
+
+### Log Outputs
+
+Logs are written to multiple destinations:
+
+**Production:**
+- `logs/app.log` - File output
+- `stdout` - Console output (for container logs)
+
+**Development:**
+- `logs/app.log` - File output
+- `pino-pretty` - Pretty-printed console output
+
+```typescript server/lib/logger.ts
+const targets: TransportTargetOptions[] = [];
+
+targets.push({
+  target: 'pino/file',
+  options: { destination: path.join(logDir, 'app.log') },
+  level: logLevel,
+});
+
+if (isProd) {
+  targets.push({
+    target: 'pino/file',
+    options: { destination: 1 }, // stdout
+    level: logLevel,
+  });
+} else {
+  targets.push({
+    target: 'pino-pretty',
+    options: {
+      colorize: true,
+      translateTime: 'yyyy-mm-dd HH:MM:ss.l o',
+      ignore: 'pid,hostname,ctxId',
+      messageFormat: '{if ctxId}[{ctxId}] {end}{msg}',
+    },
+    level: logLevel,
+  });
+}
+```
+
+### Log Levels
+
+Configure log level via environment variable:
+
+```bash
+LOG_LEVEL=info  # debug | info | warn | error
+```
+
+### Structured Context
+
+Always include relevant context in logs:
+
+```typescript
+logger.info(
+  { threadId, sandboxId, sessionId, template },
+  'Created sandbox'
+);
+
+logger.error(
+  { error, channel: channelId },
+  'Failed to send message'
+);
+
+logger.debug(
+  { ctxId, message: `${authorName}: ${content}` },
+  `Triggered by ${trigger.type}`
+);
+```
+
+**Best Practices:**
+1. Use structured fields (objects) instead of string interpolation
+2. Include `ctxId` or `threadId` for correlation
+3. Add `error` field for exceptions (automatically serialized)
+4. Keep messages concise and action-oriented
+
+### Example Log Output
+
+**Development (pino-pretty):**
+```
+2026-03-01 10:30:45.123 +00:00 INFO [C12345-1234567890.123456]: Created sandbox
+    threadId: "C12345-1234567890.123456"
+    sandboxId: "sb_abc123"
+    sessionId: "ses_xyz789"
+    template: "gorkie-sandbox:1.1.0"
+```
+
+**Production (JSON):**
+```json
+{
+  "level": 30,
+  "time": "2026-03-01T10:30:45.123Z",
+  "msg": "Created sandbox",
+  "threadId": "C12345-1234567890.123456",
+  "sandboxId": "sb_abc123",
+  "sessionId": "ses_xyz789",
+  "template": "gorkie-sandbox:1.1.0"
+}
+```
+
+## Error Handling Patterns
+
+Consistent error handling across the codebase:
+
+```typescript
+import { toLogError } from '~/utils/error';
+
+try {
+  await riskyOperation();
+} catch (error) {
+  logger.error(
+    { ...toLogError(error), ctxId, additionalContext },
+    'Operation failed'
+  );
+  throw error; // Re-throw if caller should handle
+}
+```
+
+The `toLogError` utility safely extracts error information:
+
+```typescript
+export function toLogError(error: unknown): {
+  error?: string;
+  stack?: string;
+} {
+  if (error instanceof Error) {
+    return {
+      error: error.message,
+      stack: error.stack,
+    };
+  }
+  return {
+    error: String(error),
+  };
+}
+```
+
+## Monitoring Best Practices
+
+### 1. Context Propagation
+
+Always pass `ctxId` through the call stack:
+
+```typescript
+const ctxId = getContextId(context);
+
+logger.info({ ctxId }, 'Starting operation');
+await performTask(ctxId);
+logger.info({ ctxId }, 'Operation complete');
+```
+
+This enables:
+- Filtering logs by conversation thread
+- Correlating events across async operations
+- Debugging specific user issues
+
+### 2. Trace Important Operations
+
+Log key lifecycle events:
+
+```typescript
+logger.info({ ctxId }, 'Message received');
+logger.debug({ ctxId, trigger: trigger.type }, 'Triggered by mention');
+logger.info({ ctxId, toolCalls: toolCalls.length }, 'AI processing complete');
+logger.info({ ctxId, duration: Date.now() - start }, 'Response sent');
+```
+
+### 3. Monitor Resource Usage
+
+Log sandbox lifecycle for cost monitoring:
+
+```typescript
+logger.info(
+  { threadId, sandboxId, action: 'created' },
+  'Sandbox lifecycle event'
+);
+logger.info(
+  { threadId, sandboxId, action: 'paused' },
+  'Sandbox lifecycle event'
+);
+logger.info(
+  { threadId, sandboxId, action: 'deleted', reason: 'expired' },
+  'Sandbox lifecycle event'
+);
+```
+
+### 4. Alert on Critical Errors
+
+Set up alerts for:
+- Unhandled exceptions
+- Sandbox creation failures
+- Database connection errors
+- Rate limit exhaustion
+- E2B API errors
+
+## Debugging Tips
+
+### Find All Logs for a Thread
+
+```bash
+grep 'C12345-1234567890.123456' logs/app.log | jq
+```
+
+### Filter by Log Level
+
+```bash
+cat logs/app.log | jq 'select(.level >= 50)' # Errors only
+```
+
+### Track Sandbox Lifecycle
+
+```bash
+cat logs/app.log | jq 'select(.sandboxId == "sb_abc123")'
+```
+
+### Monitor Tool Execution
+
+```bash
+cat logs/app.log | jq 'select(.msg | contains("tool"))'
+```
+
+## Performance Metrics
+
+Key metrics to track in production:
+
+| Metric | Description | Target |
+|--------|-------------|--------|
+| Response Time | Time from message to reply | < 5s |
+| Sandbox Creation | Time to create new sandbox | < 30s |
+| Sandbox Resume | Time to resume paused sandbox | < 5s |
+| Tool Execution | Time per tool call | < 3s |
+| Memory Usage | Application memory footprint | < 512MB |
+| Active Sandboxes | Number of running sandboxes | < 50 |
+
+<Info>
+Use Langfuse's analytics dashboard to track AI-specific metrics like token usage, cost per conversation, and tool success rates.
+</Info>
+
+## Troubleshooting
+
+### Missing Traces
+
+If traces aren't appearing in Langfuse:
+1. Verify `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set
+2. Check SDK is properly initialized before first AI call
+3. Ensure SDK shutdown is called on exit
+4. Look for SDK errors in logs
+
+### Log File Size
+
+If log files grow too large:
+1. Implement log rotation (use `pino-roll` or external tool)
+2. Lower `LOG_LEVEL` to `warn` or `error`
+3. Filter verbose libraries (Slack SDK, Drizzle)
+4. Set up external log aggregation (CloudWatch, Datadog)
+
+### Context Missing
+
+If logs are missing `ctxId`:
+1. Ensure `getContextId(context)` is called early
+2. Pass `ctxId` to all child functions
+3. Add `ctxId` to child logger: `logger.child({ ctxId })`

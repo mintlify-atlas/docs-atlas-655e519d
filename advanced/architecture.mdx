@@ -1,0 +1,333 @@
+---
+title: 'System Architecture'
+description: 'Understand the core components and request flow of Gorkie'
+---
+
+## Overview
+
+Gorkie is built as a multi-layered Slack bot architecture with persistent sandbox environments, AI orchestration, and comprehensive observability.
+
+## Core Components
+
+### Slack App Layer
+
+The Slack integration is built with `@slack/bolt` and supports both HTTP and Socket Mode:
+
+```typescript server/slack/app.ts
+export function createSlackApp(): SlackApp {
+  if (env.SLACK_SOCKET_MODE) {
+    const app = new App({
+      token: env.SLACK_BOT_TOKEN,
+      signingSecret: env.SLACK_SIGNING_SECRET,
+      appToken: env.SLACK_APP_TOKEN,
+      socketMode: true,
+      logLevel: LogLevel.INFO,
+    });
+    return { app, socketMode: true };
+  }
+
+  const receiver = new ExpressReceiver({
+    signingSecret: env.SLACK_SIGNING_SECRET,
+  });
+
+  const app = new App({
+    token: env.SLACK_BOT_TOKEN,
+    receiver,
+    logLevel: LogLevel.INFO,
+  });
+
+  return { app, receiver, socketMode: false };
+}
+```
+
+- **Socket Mode**: Uses WebSocket connection (recommended for development)
+- **HTTP Mode**: Uses Express receiver for production deployments
+- **Event Registration**: All Slack events are registered in `slack/events/`
+
+### AI Orchestration Layer
+
+The AI layer uses Vercel AI SDK with a **ToolLoopAgent** pattern:
+
+```typescript server/lib/ai/agents/orchestrator.ts
+export const orchestratorAgent = ({ context, requestHints, files, stream }) =>
+  new ToolLoopAgent({
+    model: provider.languageModel('chat-model'),
+    instructions: systemPrompt({ agent: 'chat', requestHints, context }),
+    providerOptions: {
+      openrouter: {
+        reasoning: { enabled: true, exclude: false, effort: 'medium' },
+      },
+    },
+    toolChoice: 'required',
+    tools: {
+      searchWeb, searchSlack, getUserInfo, sandbox,
+      generateImage, mermaid, react, reply, skip,
+      // ... all chat tools
+    },
+    stopWhen: [
+      stepCountIs(25),
+      successToolCall('reply'),
+      successToolCall('skip'),
+    ],
+  });
+```
+
+**Available Tools:**
+- `reply` - Send threaded messages
+- `react` - Add emoji reactions
+- `searchWeb` - Internet search
+- `searchSlack` - Workspace search
+- `sandbox` - Execute code in E2B sandbox
+- `generateImage` - AI image generation
+- `mermaid` - Diagram creation
+- `scheduleTask` - Cron-based recurring tasks
+- `getUserInfo` - Fetch user profiles
+- `summariseThread` - Thread summarization
+
+See the [AI Tools](/ai-tools/overview) section for detailed documentation.
+
+### E2B Sandbox Layer
+
+Gorkie uses **E2B Code Interpreter** sandboxes for code execution:
+
+- **Persistent Sessions**: Each thread gets its own sandbox with preserved state
+- **Auto-Pause**: Sandboxes automatically pause after inactivity
+- **Session Resumption**: Threads resume from the exact state they left off
+- **RPC Communication**: Uses a custom RPC protocol over PTY for tool execution
+
+See [E2B Sandbox Internals](/advanced/e2b-sandbox) for details.
+
+### Database Layer
+
+Gorkie uses **PostgreSQL** with Drizzle ORM:
+
+**Tables:**
+- `sandbox_sessions` - Tracks threadId → sandboxId mappings and lifecycle
+- `scheduled_tasks` - Stores cron-scheduled recurring tasks
+
+```typescript server/db/schema.ts
+export const sandboxSessions = pgTable('sandbox_sessions', {
+  threadId: text('thread_id').primaryKey(),
+  sandboxId: text('sandbox_id').notNull(),
+  sessionId: text('session_id').notNull(),
+  status: text('status').notNull().default('creating'),
+  pausedAt: timestamp('paused_at', { withTimezone: true }),
+  resumedAt: timestamp('resumed_at', { withTimezone: true }),
+  destroyedAt: timestamp('destroyed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});
+```
+
+### Redis Layer
+
+Redis handles rate limiting and permission caching:
+
+```typescript server/lib/kv.ts
+import { RedisClient } from 'bun';
+import { env } from '~/env';
+
+export const redis = new RedisClient(env.REDIS_URL);
+```
+
+See [Rate Limiting](/advanced/rate-limiting) for implementation details.
+
+## Request Flow
+
+### 1. Message Received
+
+When a Slack message is received:
+
+```typescript server/slack/events/message-create/index.ts
+export async function execute(args: MessageEventArgs): Promise<void> {
+  const messageContext = toMessageContext(args);
+  const ctxId = getContextId(messageContext);
+  
+  // Queue message for processing (ensures sequential handling per thread)
+  await getQueue(ctxId)
+    .add(async () => handleMessage(messageContext))
+    .catch((error) => {
+      logger.error({ error, ctxId }, 'Failed to process queued message');
+    });
+}
+```
+
+<Info>
+Messages are queued per thread/channel using `p-queue` to ensure sequential processing and prevent race conditions.
+</Info>
+
+### 2. Permission Check
+
+Before processing, user permissions are checked:
+
+```typescript
+if (!canUseBot(userId)) {
+  // Notify user to join opt-in channel if configured
+  return;
+}
+```
+
+### 3. Context Building
+
+The system fetches conversation history and builds context:
+
+```typescript
+const { messages, requestHints } = await buildChatContext(messageContext);
+```
+
+### 4. AI Processing
+
+The orchestrator agent processes the request:
+
+```typescript server/slack/events/message-create/utils/respond.ts
+const agent = orchestratorAgent({ context, requestHints, files, stream });
+
+const streamResult = await agent.stream({
+  messages: [
+    ...messages,
+    { role: 'user', content: currentMessageContent },
+  ],
+});
+
+await consumeOrchestratorReasoningStream({
+  context, stream, fullStream: streamResult.fullStream,
+});
+```
+
+### 5. Tool Execution
+
+The agent selects and executes tools based on the user's request:
+
+- Tools return structured results
+- Results are streamed back to Slack in real-time
+- Reasoning is displayed as "Thinking" tasks
+
+### 6. Response Delivery
+
+The `reply` tool sends the final response:
+
+```typescript
+await client.chat.postMessage({
+  channel: event.channel,
+  thread_ts: event.thread_ts ?? event.ts,
+  markdown_text: content,
+});
+```
+
+## Entry Point
+
+The application starts in `server/index.ts`:
+
+```typescript server/index.ts
+async function main() {
+  startSandboxJanitor();                    // Background cleanup process
+  const { app, socketMode } = createSlackApp();
+  startScheduledTaskRunner(app.client);     // Cron task runner
+
+  if (socketMode) {
+    await app.start();
+    logger.info('Slack Bolt app connected via Socket Mode');
+  } else {
+    await app.start(env.PORT);
+    logger.info({ port: env.PORT }, 'Slack Bolt app listening');
+  }
+}
+```
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Slack API                            │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Slack Bolt App                             │
+│  (Socket Mode or HTTP Receiver)                              │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Event Handlers                              │
+│  • message-create  • member_joined_channel                   │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Message Queue (p-queue)                     │
+│  Per-thread sequential processing                            │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Orchestrator Agent (ToolLoopAgent)              │
+│  • System prompts  • Tool selection  • Reasoning             │
+└─────┬───────────────────────────────────┬───────────────────┘
+      │                                   │
+      ▼                                   ▼
+┌──────────────────┐            ┌──────────────────────────┐
+│   Chat Tools     │            │   Sandbox Agent (E2B)    │
+│  • reply         │            │  • Code execution        │
+│  • react         │            │  • File operations       │
+│  • searchWeb     │            │  • Persistent session    │
+│  • searchSlack   │            │  • RPC over PTY          │
+│  • generateImage │            └────────┬─────────────────┘
+│  • mermaid       │                     │
+└──────────────────┘                     ▼
+                               ┌──────────────────────────┐
+                               │   E2B Sandbox Pool       │
+                               │  • Auto-pause/resume     │
+                               │  • Janitor cleanup       │
+                               └──────────────────────────┘
+                               
+┌─────────────────────────────────────────────────────────────┐
+│                    Supporting Services                       │
+│  • PostgreSQL (sessions, tasks)                              │
+│  • Redis (rate limiting, caching)                            │
+│  • OpenTelemetry (tracing)                                   │
+│  • Langfuse (AI observability)                               │
+│  • Pino (structured logging)                                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Key Design Patterns
+
+### Tool Factory Pattern
+
+Tools that need context use a factory pattern:
+
+```typescript
+export const toolName = ({ context }: { context: SlackMessageContext }) =>
+  tool({
+    description: 'Tool description',
+    inputSchema: z.object({ /* schema */ }),
+    execute: async (params) => {
+      // Tool logic with access to context
+    },
+  });
+```
+
+### Sequential Message Processing
+
+Per-thread queues prevent race conditions:
+
+```typescript server/lib/queue.ts
+export function getQueue(ctxId: string) {
+  let queue = queues.get(ctxId);
+  if (!queue) {
+    queue = new PQueue({ concurrency: 1 });
+    queue.once('idle', () => queues.delete(ctxId));
+    queues.set(ctxId, queue);
+  }
+  return queue;
+}
+```
+
+### Stream-First Communication
+
+Real-time updates are streamed to Slack as they happen, providing immediate feedback to users.
+
+<Warning>
+The architecture assumes **single-instance deployment**. If you need horizontal scaling, you'll need to implement distributed locking for sandbox session management.
+</Warning>

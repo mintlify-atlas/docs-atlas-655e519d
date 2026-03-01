@@ -1,0 +1,191 @@
+---
+title: AI Model Providers
+description: AI model provider configuration and fallback logic
+---
+
+Gorkie uses multiple AI model providers with automatic fallback to ensure reliability. The provider system is built on Vercel AI SDK with custom retry logic.
+
+## Provider Configuration
+
+Providers are configured in `server/lib/ai/providers.ts`.
+
+### Available Providers
+
+#### Hack Club AI Proxy
+
+Primary provider using Hack Club's AI proxy service.
+
+```typescript
+const hackclubBase = createOpenRouter({
+  apiKey: env.HACKCLUB_API_KEY,
+  baseURL: 'https://ai.hackclub.com/proxy/v1',
+});
+
+const hackclub = wrapProvider({
+  provider: hackclubBase,
+  languageModelMiddleware: {
+    specificationVersion: 'v3',
+    overrideProvider: () => 'hackclub',
+  },
+  imageModelMiddleware: {
+    specificationVersion: 'v3',
+    overrideProvider: () => 'hackclub',
+  },
+});
+```
+
+#### OpenRouter
+
+Fallback provider for reliability.
+
+```typescript
+const openrouter = createOpenRouter({
+  apiKey: env.OPENROUTER_API_KEY,
+});
+```
+
+## Model Selection
+
+### Chat Model
+
+Main conversational model with multiple fallbacks.
+
+```typescript
+const chatModel = createRetryable({
+  model: hackclub.languageModel('google/gemini-3-flash-preview'),
+  retries: [
+    hackclub.languageModel('google/gemini-2.5-flash'),
+    hackclub.languageModel('openai/gpt-5-mini'),
+    openrouter('google/gemini-3-flash-preview'),
+    openrouter('google/gemini-2.5-flash'),
+    openrouter('openai/gpt-5-mini'),
+  ],
+  onError: onModelError,
+});
+```
+
+**Fallback order:**
+1. Hack Club → `google/gemini-3-flash-preview`
+2. Hack Club → `google/gemini-2.5-flash`
+3. Hack Club → `openai/gpt-5-mini`
+4. OpenRouter → `google/gemini-3-flash-preview`
+5. OpenRouter → `google/gemini-2.5-flash`
+6. OpenRouter → `openai/gpt-5-mini`
+
+### Summarizer Model
+
+Lightweight model for thread summarization.
+
+```typescript
+const summariserModel = createRetryable({
+  model: hackclub.languageModel('google/gemini-3-flash-preview'),
+  retries: [
+    hackclub.languageModel('google/gemini-2.5-flash'),
+    hackclub.languageModel('openai/gpt-5-mini'),
+    openrouter('google/gemini-2.5-flash-lite-preview-09-2025'),
+    openrouter('openai/gpt-5-nano'),
+  ],
+  onError: onModelError,
+});
+```
+
+**Fallback order:**
+1. Hack Club → `google/gemini-3-flash-preview`
+2. Hack Club → `google/gemini-2.5-flash`
+3. Hack Club → `openai/gpt-5-mini`
+4. OpenRouter → `google/gemini-2.5-flash-lite-preview-09-2025`
+5. OpenRouter → `openai/gpt-5-nano`
+
+### Image Model
+
+For image generation tasks.
+
+```typescript
+export const provider = customProvider({
+  languageModels: {
+    'chat-model': chatModel,
+    'summariser-model': summariserModel,
+  },
+  imageModels: {
+    'image-model': hackclub.imageModel('google/gemini-3.1-flash-image-preview'),
+  },
+});
+```
+
+## Error Handling
+
+The `onModelError` callback logs failures and automatically switches to the next model.
+
+```typescript
+const onModelError = (context: {
+  current: { model: { provider: string; modelId: string } };
+}) => {
+  const { model } = context.current;
+  logger.error(
+    `error with model ${model.provider}/${model.modelId}, switching to next model`
+  );
+};
+```
+
+## Provider Setup
+
+### Environment Variables
+
+Required environment variables (defined in `server/env.ts`):
+
+```bash
+HACKCLUB_API_KEY=your_hackclub_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
+```
+
+### Usage in Code
+
+Import the provider and reference models by name:
+
+```typescript
+import { provider } from '~/lib/ai/providers';
+import { streamText } from 'ai';
+
+const result = await streamText({
+  model: provider.languageModel('chat-model'),
+  system: systemPrompt,
+  messages,
+  tools,
+});
+```
+
+## Custom Provider
+
+The final exported provider is a custom provider that wraps the chat, summarizer, and image models:
+
+```typescript
+export const provider = customProvider({
+  languageModels: {
+    'chat-model': chatModel,
+    'summariser-model': summariserModel,
+  },
+  imageModels: {
+    'image-model': hackclub.imageModel('google/gemini-3.1-flash-image-preview'),
+  },
+});
+```
+
+## Retry Logic
+
+The `createRetryable` function from `ai-retry` automatically:
+- Tries the primary model first
+- Falls back to each retry model in order on error
+- Logs each failure via `onModelError`
+- Throws if all models fail
+
+This ensures maximum uptime even if individual providers or models experience issues.
+
+## Model Selection Strategy
+
+<Info>
+**Performance vs. Cost**: The primary models (Gemini 3 Flash Preview) offer the best balance of speed and quality. Fallbacks include both newer (Gemini 2.5) and lighter (GPT-5 Mini/Nano) models for redundancy.
+</Info>
+
+<Warning>
+**API Key Security**: Never commit API keys to version control. Use environment variables and ensure they're listed in `.gitignore`.
+</Warning>

@@ -1,0 +1,683 @@
+---
+title: Database Setup
+description: Set up PostgreSQL database for Gorkie
+---
+
+Gorkie uses PostgreSQL to store persistent data including sandbox sessions and scheduled tasks. This guide covers database setup for development and production.
+
+## What Database is Used For
+
+Gorkie stores:
+
+- **Sandbox Sessions**: E2B sandbox lifecycle and state (`sandbox_sessions` table)
+- **Scheduled Tasks**: Cron-based recurring tasks (`scheduled_tasks` table)
+
+The schema is managed with Drizzle ORM.
+
+## Database Schema Overview
+
+Gorkie's schema is defined in `server/db/schema.ts`:
+
+### Sandbox Sessions Table
+
+Tracks E2B sandbox instances and their lifecycle:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `thread_id` | text (PK) | Slack thread ID associated with sandbox |
+| `sandbox_id` | text | E2B sandbox identifier |
+| `session_id` | text | Session identifier |
+| `status` | text | Current status (creating, active, paused, destroyed) |
+| `paused_at` | timestamp | When sandbox was paused |
+| `resumed_at` | timestamp | When sandbox was resumed |
+| `destroyed_at` | timestamp | When sandbox was destroyed |
+| `created_at` | timestamp | Record creation time |
+| `updated_at` | timestamp | Last update time |
+
+**Indexes**:
+- `sandbox_sessions_status_idx` on `status`
+- `sandbox_sessions_paused_idx` on `paused_at`
+- `sandbox_sessions_updated_idx` on `updated_at`
+
+### Scheduled Tasks Table
+
+Stores recurring tasks configured via Slack:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | text (PK) | Unique task identifier |
+| `creator_user_id` | text | Slack user ID who created the task |
+| `destination_type` | text | Where to send results (channel, dm, thread) |
+| `destination_id` | text | Channel/user ID for results |
+| `thread_ts` | text | Thread timestamp if posting to thread |
+| `prompt` | text | AI prompt to execute |
+| `cron_expression` | text | Cron schedule expression |
+| `timezone` | text | Timezone for cron schedule |
+| `enabled` | boolean | Whether task is active |
+| `next_run_at` | timestamp | Next scheduled execution |
+| `running_at` | timestamp | Currently running timestamp |
+| `last_run_at` | timestamp | Last execution time |
+| `last_status` | text | Result of last run |
+| `last_error` | text | Error from last run if failed |
+| `created_at` | timestamp | Record creation time |
+| `updated_at` | timestamp | Last update time |
+
+**Indexes**:
+- `scheduled_tasks_due_idx` on `enabled, next_run_at`
+- `scheduled_tasks_running_idx` on `running_at`
+- `scheduled_tasks_creator_idx` on `creator_user_id`
+
+## Local Development
+
+### Option 1: Neon (Recommended)
+
+Neon provides a generous free tier with serverless Postgres:
+
+<Steps>
+  <Step title="Create a Neon account">
+    Sign up at [https://neon.tech](https://neon.tech)
+  </Step>
+  
+  <Step title="Create a project">
+    1. Click "Create a project"
+    2. Choose a name and region
+    3. Note the connection string provided
+  </Step>
+  
+  <Step title="Set environment variable">
+    Copy the connection string to your `.env` file:
+    
+    ```bash
+    DATABASE_URL="postgresql://user:password@ep-example.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    ```
+  </Step>
+  
+  <Step title="Run migrations">
+    ```bash
+    bun run db:push
+    ```
+    
+    This creates the tables in your Neon database.
+  </Step>
+</Steps>
+
+**Pros**:
+- Free tier: 0.5 GB storage, 10 GB data transfer
+- Serverless (auto-scaling and auto-pause)
+- No local setup required
+- Branching for development
+
+### Option 2: Docker Postgres
+
+Run Postgres locally with Docker:
+
+```bash
+# Start Postgres in Docker
+docker run -d \
+  --name gorkie-postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_DB=gorkie \
+  -p 5432:5432 \
+  postgres:16-alpine
+
+# Set environment variable
+echo 'DATABASE_URL="postgresql://postgres:postgres@localhost:5432/gorkie"' >> .env
+
+# Run migrations
+bun run db:push
+```
+
+Stop Postgres:
+
+```bash
+docker stop gorkie-postgres
+```
+
+Restart Postgres:
+
+```bash
+docker start gorkie-postgres
+```
+
+### Option 3: Native Postgres
+
+Install Postgres locally:
+
+#### macOS (Homebrew)
+
+```bash
+# Install Postgres
+brew install postgresql@16
+
+# Start Postgres service
+brew services start postgresql@16
+
+# Create database
+creatdb gorkie
+
+# Set environment variable
+echo 'DATABASE_URL="postgresql://localhost:5432/gorkie"' >> .env
+```
+
+#### Ubuntu/Debian
+
+```bash
+# Install Postgres
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+
+# Start service
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Create database and user
+sudo -u postgres psql
+```
+
+In psql:
+
+```sql
+CREATE DATABASE gorkie;
+CREATE USER gorkieuser WITH PASSWORD 'yourpassword';
+GRANT ALL PRIVILEGES ON DATABASE gorkie TO gorkieuser;
+\q
+```
+
+Set environment variable:
+
+```bash
+echo 'DATABASE_URL="postgresql://gorkieuser:yourpassword@localhost:5432/gorkie"' >> .env
+```
+
+### Verify Local Setup
+
+```bash
+# Test connection with psql
+psql "$DATABASE_URL" -c "SELECT version();"
+
+# View Gorkie tables
+psql "$DATABASE_URL" -c "\dt"
+```
+
+## Production Setup
+
+### Neon (Recommended)
+
+Neon is ideal for production Postgres:
+
+<Steps>
+  <Step title="Upgrade plan if needed">
+    Free tier supports most small to medium deployments. Upgrade for:
+    - More storage (>512 MB)
+    - Higher compute resources
+    - Additional branches
+  </Step>
+  
+  <Step title="Enable connection pooling">
+    Neon includes connection pooling by default. Use the pooled connection string:
+    
+    ```bash
+    DATABASE_URL="postgresql://user:password@ep-example-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require"
+    ```
+    
+    Note the `-pooler` in the hostname.
+  </Step>
+  
+  <Step title="Set up backups">
+    Neon automatically backs up your data. Configure retention in project settings.
+  </Step>
+</Steps>
+
+### Supabase
+
+Supabase provides Postgres with additional features:
+
+<Steps>
+  <Step title="Create a project">
+    Sign up at [https://supabase.com](https://supabase.com) and create a project.
+  </Step>
+  
+  <Step title="Get connection string">
+    Go to Project Settings → Database and copy the connection string.
+    
+    ```bash
+    DATABASE_URL="postgresql://postgres:password@db.project.supabase.co:5432/postgres?sslmode=require"
+    ```
+  </Step>
+  
+  <Step title="Run migrations">
+    ```bash
+    bun run db:push
+    ```
+  </Step>
+</Steps>
+
+**Pros**:
+- Free tier: 500 MB storage, 2 GB data transfer
+- Automatic backups
+- Built-in connection pooling
+- Additional features (Auth, Storage, Realtime)
+
+### Railway
+
+If deploying on Railway:
+
+<Steps>
+  <Step title="Add Postgres plugin">
+    In your Railway project, click "New" → "Database" → "Add PostgreSQL"
+  </Step>
+  
+  <Step title="Automatic configuration">
+    Railway automatically sets the `DATABASE_URL` environment variable.
+  </Step>
+  
+  <Step title="Run migrations">
+    Add a deployment step or run manually:
+    
+    ```bash
+    bun run db:push
+    ```
+  </Step>
+</Steps>
+
+### Render
+
+If deploying on Render:
+
+<Steps>
+  <Step title="Create Postgres instance">
+    1. Click "New" → "PostgreSQL"
+    2. Choose a name and region
+    3. Select plan (free tier available)
+  </Step>
+  
+  <Step title="Link to web service">
+    1. Go to your web service settings
+    2. Add `DATABASE_URL` environment variable
+    3. Use the Internal Database URL
+  </Step>
+  
+  <Step title="Run migrations">
+    Add to your deploy script or run manually after first deployment.
+  </Step>
+</Steps>
+
+### Self-Hosted
+
+For VPS deployments, install and configure Postgres:
+
+```bash
+# Install Postgres (Ubuntu/Debian)
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+
+# Secure installation
+sudo -u postgres psql
+```
+
+In psql:
+
+```sql
+-- Set postgres user password
+ALTER USER postgres WITH PASSWORD 'strong-password';
+
+-- Create application database and user
+CREATE DATABASE gorkie;
+CREATE USER gorkieapp WITH PASSWORD 'strong-password';
+GRANT ALL PRIVILEGES ON DATABASE gorkie TO gorkieapp;
+```
+
+Configure for remote access (if needed):
+
+```bash
+# Edit postgresql.conf
+sudo nano /etc/postgresql/16/main/postgresql.conf
+```
+
+Change:
+
+```conf
+listen_addresses = 'localhost'  # or '*' for all interfaces
+```
+
+Edit `pg_hba.conf` for authentication:
+
+```bash
+sudo nano /etc/postgresql/16/main/pg_hba.conf
+```
+
+Add:
+
+```conf
+# Allow connections from application
+host    gorkie    gorkieapp    10.0.0.0/8    scram-sha-256
+```
+
+Restart Postgres:
+
+```bash
+sudo systemctl restart postgresql
+```
+
+<Warning>
+  Always use SSL/TLS for production databases. Never expose Postgres to the public internet without proper authentication and encryption.
+</Warning>
+
+## Connection String Format
+
+### Basic Format
+
+```bash
+DATABASE_URL="postgresql://user:password@host:5432/database"
+```
+
+### With SSL (Required for Production)
+
+```bash
+DATABASE_URL="postgresql://user:password@host:5432/database?sslmode=require"
+```
+
+SSL Modes:
+- `disable`: No SSL (local dev only)
+- `require`: Require SSL but don't verify certificate
+- `verify-ca`: Require SSL and verify CA
+- `verify-full`: Require SSL and verify hostname
+
+### With Connection Pooling
+
+Some providers offer pooled connections:
+
+```bash
+# Neon example
+DATABASE_URL="postgresql://user:password@ep-name-pooler.region.neon.tech/db?sslmode=require"
+```
+
+## Database Migrations with Drizzle
+
+Gorkie uses Drizzle Kit for database migrations.
+
+### Configuration
+
+The Drizzle config is in `drizzle.config.ts`:
+
+```typescript
+import { defineConfig } from 'drizzle-kit';
+
+export default defineConfig({
+  out: './drizzle',
+  schema: './server/db/schema.ts',
+  dialect: 'postgresql',
+  dbCredentials: {
+    url: process.env.DATABASE_URL ?? '',
+  },
+});
+```
+
+### Available Commands
+
+```bash
+# Push schema to database (no migration files)
+bun run db:push
+
+# Generate migration files from schema
+bun run db:generate
+
+# Run pending migrations
+bun run db:migrate
+
+# Open Drizzle Studio (database GUI)
+bun run db:studio
+```
+
+### Typical Workflow
+
+#### Quick Development (db:push)
+
+For rapid iteration during development:
+
+```bash
+# Make changes to server/db/schema.ts
+# Then push to database
+bun run db:push
+```
+
+This directly syncs your schema without creating migration files.
+
+#### Production Migrations
+
+For production deployments with version control:
+
+<Steps>
+  <Step title="Modify schema">
+    Edit `server/db/schema.ts` with your changes.
+  </Step>
+  
+  <Step title="Generate migration">
+    ```bash
+    bun run db:generate
+    ```
+    
+    Creates SQL migration files in `./drizzle` directory.
+  </Step>
+  
+  <Step title="Review migration">
+    Check the generated SQL in `drizzle/` to ensure it's correct.
+  </Step>
+  
+  <Step title="Run migration">
+    ```bash
+    bun run db:migrate
+    ```
+    
+    Applies the migration to your database.
+  </Step>
+  
+  <Step title="Commit migrations">
+    ```bash
+    git add drizzle/ server/db/schema.ts
+    git commit -m "Add new table/column"
+    ```
+  </Step>
+</Steps>
+
+### Viewing Your Data
+
+Drizzle Studio provides a GUI for browsing data:
+
+```bash
+bun run db:studio
+```
+
+Opens a web interface at `https://local.drizzle.studio`
+
+## Querying the Database
+
+Gorkie uses Drizzle ORM for type-safe queries.
+
+### Example: Query Sandbox Sessions
+
+```typescript
+import { db } from '~/db';
+import { sandboxSessions } from '~/db/schema';
+import { eq } from 'drizzle-orm';
+
+// Get all active sessions
+const active = await db
+  .select()
+  .from(sandboxSessions)
+  .where(eq(sandboxSessions.status, 'active'));
+
+// Get session by thread ID
+const session = await db
+  .select()
+  .from(sandboxSessions)
+  .where(eq(sandboxSessions.threadId, 'thread-id'))
+  .limit(1);
+```
+
+### Example: Query Scheduled Tasks
+
+```typescript
+import { db } from '~/db';
+import { scheduledTasks } from '~/db/schema';
+import { eq, and, lte } from 'drizzle-orm';
+
+// Get due tasks
+const dueTasks = await db
+  .select()
+  .from(scheduledTasks)
+  .where(
+    and(
+      eq(scheduledTasks.enabled, true),
+      lte(scheduledTasks.nextRunAt, new Date())
+    )
+  );
+```
+
+## Backup and Recovery
+
+### Automated Backups
+
+Most cloud providers handle backups automatically:
+
+- **Neon**: Automatic backups with point-in-time recovery
+- **Supabase**: Daily backups with 7-day retention on free tier
+- **Railway**: Automatic backups on paid plans
+- **Render**: Daily backups with 7-day retention
+
+### Manual Backup
+
+```bash
+# Dump database
+pg_dump "$DATABASE_URL" > backup.sql
+
+# Restore database
+psql "$DATABASE_URL" < backup.sql
+```
+
+### Backup Specific Tables
+
+```bash
+# Backup sandbox_sessions table
+pg_dump "$DATABASE_URL" -t sandbox_sessions > sandbox_sessions_backup.sql
+
+# Backup scheduled_tasks table
+pg_dump "$DATABASE_URL" -t scheduled_tasks > scheduled_tasks_backup.sql
+```
+
+## Monitoring
+
+### Check Database Size
+
+```sql
+SELECT 
+  pg_size_pretty(pg_database_size(current_database())) as database_size;
+```
+
+### Table Statistics
+
+```sql
+SELECT 
+  schemaname,
+  tablename,
+  n_live_tup as row_count,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as total_size
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+```
+
+### Active Connections
+
+```sql
+SELECT count(*) FROM pg_stat_activity;
+```
+
+## Troubleshooting
+
+### Connection Refused
+
+```
+Error: Connection refused
+```
+
+**Solutions**:
+- Check Postgres is running: `pg_isready`
+- Verify host and port in `DATABASE_URL`
+- Check firewall rules
+
+### Authentication Failed
+
+```
+Error: password authentication failed
+```
+
+**Solutions**:
+- Verify username and password in `DATABASE_URL`
+- Check `pg_hba.conf` authentication method
+- Ensure user has correct permissions
+
+### SSL/TLS Required
+
+```
+Error: server requires SSL
+```
+
+**Solutions**:
+- Add `?sslmode=require` to `DATABASE_URL`
+- For Neon/Supabase, SSL is always required
+
+### Migration Conflicts
+
+```
+Error: relation already exists
+```
+
+**Solutions**:
+- Drop and recreate tables (dev only): `bun run db:push --force`
+- Reset migration state
+- Check for duplicate migrations
+
+### Database Connection Limit
+
+```
+Error: too many connections
+```
+
+**Solutions**:
+- Use connection pooling (Neon: `-pooler` hostname)
+- Reduce max connections in app
+- Upgrade database plan
+
+## Best Practices
+
+<Check>
+  Always use SSL (`?sslmode=require`) for production databases
+</Check>
+<Check>
+  Enable connection pooling for serverless/distributed deployments
+</Check>
+<Check>
+  Run migrations in CI/CD pipeline before deployment
+</Check>
+<Check>
+  Monitor database size and performance metrics
+</Check>
+<Check>
+  Set up automated backups and test restoration
+</Check>
+<Check>
+  Use environment-specific databases (dev, staging, production)
+</Check>
+<Check>
+  Never commit `DATABASE_URL` or credentials to git
+</Check>
+<Check>
+  Regularly update to latest Drizzle version
+</Check>
+
+## Next Steps
+
+- [Configure environment variables](/configuration/environment-variables)
+- [Set up Redis](/configuration/redis-setup)
+- [Deploy to production](/configuration/deployment)

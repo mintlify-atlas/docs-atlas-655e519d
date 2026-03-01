@@ -1,0 +1,452 @@
+---
+title: Redis Setup
+description: Configure Redis for caching and rate limiting
+---
+
+Gorkie uses Redis for caching user permissions and managing application state. This guide covers setting up Redis for both local development and production.
+
+## Why Redis?
+
+Redis is used in Gorkie for:
+
+- **User Permission Caching**: Caches allowed users to reduce Slack API calls
+- **Application State**: Stores runtime state for distributed deployments
+- **Future Features**: Rate limiting, session management, and more
+
+<Note>
+  Redis is a required dependency. The application will not start without a valid `REDIS_URL`.
+</Note>
+
+## Local Development
+
+### Option 1: Docker (Recommended)
+
+The fastest way to run Redis locally:
+
+```bash
+# Start Redis in Docker
+docker run -d \
+  --name gorkie-redis \
+  -p 6379:6379 \
+  redis:7-alpine
+
+# Set environment variable
+echo 'REDIS_URL="redis://localhost:6379"' >> .env
+```
+
+Stop Redis:
+
+```bash
+docker stop gorkie-redis
+```
+
+Restart Redis:
+
+```bash
+docker start gorkie-redis
+```
+
+### Option 2: Native Installation
+
+#### macOS (Homebrew)
+
+```bash
+# Install Redis
+brew install redis
+
+# Start Redis service
+brew services start redis
+
+# Or run Redis manually
+redis-server
+```
+
+#### Ubuntu/Debian
+
+```bash
+# Install Redis
+sudo apt update
+sudo apt install redis-server
+
+# Start Redis service
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+```
+
+#### Windows (WSL)
+
+Install Redis through WSL using the Ubuntu instructions above, or use Docker.
+
+### Verify Local Installation
+
+```bash
+# Test connection
+redis-cli ping
+# Should return: PONG
+
+# Or test with the connection URL
+redis-cli -u redis://localhost:6379 ping
+```
+
+## Production Setup
+
+### Cloud Redis Providers
+
+#### Upstash (Recommended for Serverless)
+
+<Steps>
+  <Step title="Create an account">
+    Sign up at [https://upstash.com](https://upstash.com)
+  </Step>
+  
+  <Step title="Create a Redis database">
+    1. Click "Create Database"
+    2. Choose a region close to your deployment
+    3. Select "Free" or "Pay as you Go" plan
+  </Step>
+  
+  <Step title="Get connection URL">
+    Copy the connection URL from the database details page.
+    
+    ```bash
+    REDIS_URL="rediss://default:password@region.upstash.io:6379"
+    ```
+  </Step>
+</Steps>
+
+**Pros**:
+- Generous free tier
+- Serverless pricing model
+- TLS/SSL by default
+- Global edge caching
+
+#### Redis Cloud
+
+<Steps>
+  <Step title="Create an account">
+    Sign up at [https://redis.com/try-free/](https://redis.com/try-free/)
+  </Step>
+  
+  <Step title="Create a subscription">
+    1. Click "New Subscription"
+    2. Select cloud provider and region
+    3. Choose "Fixed" or "Flexible" plan
+  </Step>
+  
+  <Step title="Create a database">
+    1. Click "New Database"
+    2. Configure memory limit and options
+    3. Copy the connection URL
+    
+    ```bash
+    REDIS_URL="redis://default:password@redis-12345.cloud.redislabs.com:12345"
+    ```
+  </Step>
+</Steps>
+
+**Pros**:
+- Official Redis Cloud service
+- 30MB free tier
+- High availability options
+- Advanced features (clustering, modules)
+
+#### Railway
+
+If deploying on Railway:
+
+<Steps>
+  <Step title="Add Redis plugin">
+    In your Railway project, click "New" → "Database" → "Add Redis"
+  </Step>
+  
+  <Step title="Automatic configuration">
+    Railway automatically sets the `REDIS_URL` environment variable.
+  </Step>
+</Steps>
+
+#### Render
+
+If deploying on Render:
+
+<Steps>
+  <Step title="Create Redis instance">
+    1. Click "New" → "Redis"
+    2. Choose a name and region
+    3. Select plan (free tier available)
+  </Step>
+  
+  <Step title="Link to web service">
+    1. Go to your web service settings
+    2. Add `REDIS_URL` environment variable
+    3. Use the Internal Redis URL from the Redis instance
+  </Step>
+</Steps>
+
+### Self-Hosted Redis
+
+For VPS or self-hosted deployments:
+
+#### Basic Setup
+
+```bash
+# Install Redis (Ubuntu/Debian)
+sudo apt update
+sudo apt install redis-server
+
+# Configure Redis
+sudo nano /etc/redis/redis.conf
+```
+
+Recommended configuration changes:
+
+```conf
+# Bind to localhost only (if app is on same server)
+bind 127.0.0.1
+
+# Set a password
+requirepass your-strong-password-here
+
+# Enable persistence
+save 900 1
+save 300 10
+save 60 10000
+
+# Set memory limit
+maxmemory 256mb
+maxmemory-policy allkeys-lru
+```
+
+Restart Redis:
+
+```bash
+sudo systemctl restart redis-server
+```
+
+Connection URL:
+
+```bash
+REDIS_URL="redis://:your-strong-password-here@localhost:6379"
+```
+
+#### Secure Remote Access
+
+If Redis is on a different server:
+
+```conf
+# Allow remote connections (use with firewall)
+bind 0.0.0.0
+
+# Require password
+requirepass your-strong-password-here
+
+# Optional: Enable TLS (requires stunnel or Redis 6+)
+tls-port 6380
+port 0
+tls-cert-file /path/to/redis.crt
+tls-key-file /path/to/redis.key
+tls-ca-cert-file /path/to/ca.crt
+```
+
+<Warning>
+  Never expose Redis to the public internet without authentication and TLS. Use a firewall to restrict access to trusted IPs.
+</Warning>
+
+## Connection String Format
+
+Gorkie uses Bun's `RedisClient` which accepts standard Redis URLs.
+
+### Basic Format
+
+```bash
+REDIS_URL="redis://host:port"
+```
+
+### With Authentication
+
+```bash
+REDIS_URL="redis://:password@host:port"
+# or
+REDIS_URL="redis://username:password@host:port"
+```
+
+### With SSL/TLS
+
+```bash
+REDIS_URL="rediss://username:password@host:port"
+```
+
+Note the `rediss://` protocol (with double 's') for secure connections.
+
+### With Database Number
+
+```bash
+REDIS_URL="redis://host:port/1"
+```
+
+Default is database 0. Gorkie doesn't require a specific database number.
+
+## Usage in Gorkie
+
+Gorkie's Redis client is defined in `server/lib/kv.ts`:
+
+```typescript
+import { RedisClient } from 'bun';
+import { env } from '~/env';
+
+export const redis = new RedisClient(env.REDIS_URL);
+```
+
+The client is used throughout the application for caching.
+
+### User Permission Caching
+
+Defined in `server/lib/allowed-users.ts`, Gorkie caches Slack workspace members to reduce API calls:
+
+```typescript
+// Cache user permissions
+await redis.set(`allowed:${userId}`, 'true', 3600);
+
+// Check cache
+const allowed = await redis.get(`allowed:${userId}`);
+```
+
+### Data Structures
+
+Gorkie primarily uses:
+- **Strings**: Simple key-value pairs for caching
+- **Expiration**: TTL for automatic cache invalidation
+
+## Testing Redis Connection
+
+### From Command Line
+
+```bash
+# Test connection
+redis-cli -u "$REDIS_URL" ping
+
+# Check info
+redis-cli -u "$REDIS_URL" info server
+
+# Set and get a test value
+redis-cli -u "$REDIS_URL" set test "hello"
+redis-cli -u "$REDIS_URL" get test
+```
+
+### From Bun REPL
+
+```typescript
+// Start Bun REPL
+// bun repl
+
+import { RedisClient } from 'bun';
+
+const redis = new RedisClient('redis://localhost:6379');
+await redis.ping(); // Should return 'PONG'
+
+await redis.set('test', 'hello');
+await redis.get('test'); // Should return 'hello'
+```
+
+## Monitoring
+
+### Check Memory Usage
+
+```bash
+redis-cli -u "$REDIS_URL" info memory
+```
+
+### View All Keys
+
+```bash
+# Count keys
+redis-cli -u "$REDIS_URL" dbsize
+
+# List keys (use with caution in production)
+redis-cli -u "$REDIS_URL" keys "*"
+```
+
+### Monitor Commands
+
+```bash
+# Watch all commands in real-time
+redis-cli -u "$REDIS_URL" monitor
+```
+
+## Troubleshooting
+
+### Connection Refused
+
+```
+Error: Connection refused
+```
+
+**Solutions**:
+- Check Redis is running: `redis-cli ping`
+- Verify host and port in `REDIS_URL`
+- Check firewall rules
+
+### Authentication Failed
+
+```
+Error: NOAUTH Authentication required
+```
+
+**Solutions**:
+- Include password in URL: `redis://:password@host:port`
+- Verify password is correct
+- Check Redis `requirepass` configuration
+
+### SSL/TLS Errors
+
+```
+Error: SSL connection failed
+```
+
+**Solutions**:
+- Use `rediss://` (with double 's') for SSL
+- Verify certificate is valid
+- Check if Redis has TLS enabled
+
+### Memory Issues
+
+```
+Error: OOM command not allowed when used memory > 'maxmemory'
+```
+
+**Solutions**:
+- Increase Redis memory limit
+- Set eviction policy: `maxmemory-policy allkeys-lru`
+- Clear old keys manually
+
+## Best Practices
+
+<Check>
+  Use SSL/TLS (`rediss://`) for production deployments
+</Check>
+<Check>
+  Set strong passwords for Redis authentication
+</Check>
+<Check>
+  Configure maxmemory and eviction policies
+</Check>
+<Check>
+  Enable persistence (RDB or AOF) for important data
+</Check>
+<Check>
+  Monitor memory usage and key count
+</Check>
+<Check>
+  Use connection pooling for high-traffic applications
+</Check>
+<Check>
+  Restrict network access with firewalls
+</Check>
+<Check>
+  Regular backups for critical cached data
+</Check>
+
+## Next Steps
+
+- [Configure environment variables](/configuration/environment-variables)
+- [Set up database](/configuration/database-setup)
+- [Deploy to production](/configuration/deployment)

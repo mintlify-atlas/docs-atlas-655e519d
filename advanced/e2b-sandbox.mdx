@@ -1,0 +1,418 @@
+---
+title: 'E2B Sandbox Internals'
+description: 'Deep dive into sandbox lifecycle, session persistence, and RPC communication'
+---
+
+## Overview
+
+Gorkie uses **E2B Code Interpreter** sandboxes to provide each Slack thread with a persistent Linux environment. This enables code execution, file operations, and complex data processing tasks.
+
+## Sandbox Lifecycle
+
+### Session Resolution
+
+When the `sandbox` tool is invoked, the system resolves which sandbox to use:
+
+```typescript server/lib/sandbox/session.ts
+export async function resolveSession(
+  context: SlackMessageContext
+): Promise<ResolvedSandboxSession> {
+  const threadId = getContextId(context);
+  const existing = await getByThread(threadId);
+
+  if (!existing) {
+    return createSandbox(context, threadId);
+  }
+
+  await updateStatus(threadId, 'resuming');
+
+  try {
+    return await resumeSandbox(
+      threadId,
+      existing.sandboxId,
+      existing.sessionId
+    ).catch((error: unknown) => {
+      if (isMissingSandboxError(error)) {
+        return createSandbox(context, threadId);
+      }
+      throw error;
+    });
+  } catch (error) {
+    logger.warn({ error, threadId }, 'Failed to resume, creating new sandbox');
+    await updateStatus(threadId, 'error');
+    throw error;
+  }
+}
+```
+
+**Flow:**
+1. Check database for existing `threadId` → `sandboxId` mapping
+2. If exists, attempt to resume the sandbox
+3. If sandbox not found (404), create a new one
+4. If no mapping exists, create a new sandbox
+
+### Creating a Sandbox
+
+```typescript server/lib/sandbox/session.ts
+async function createSandbox(
+  context: SlackMessageContext,
+  threadId: string
+): Promise<ResolvedSandboxSession> {
+  const template = config.template; // 'gorkie-sandbox:1.1.0'
+
+  const sandbox = await Sandbox.betaCreate(template, {
+    apiKey: env.E2B_API_KEY,
+    timeoutMs: config.timeoutMs,        // 10 minutes
+    autoPause: true,                     // Auto-pause on inactivity
+    allowInternetAccess: true,
+    metadata: getSandboxMetadata(context, threadId),
+  });
+
+  await sandbox.setTimeout(config.timeoutMs);
+
+  // Configure the sandbox with system prompt and tools
+  await configureAgent(sandbox, systemPrompt({ agent: 'sandbox', context }));
+  
+  // Boot the RPC client
+  const client = await boot(sandbox);
+  const { sessionId } = await client.getState();
+
+  // Save mapping to database
+  await upsert({
+    threadId,
+    sandboxId: sandbox.sandboxId,
+    sessionId,
+    status: 'active',
+  });
+
+  return { client, sandbox };
+}
+```
+
+<Info>
+Sandboxes are created from the template `gorkie-sandbox:1.1.0` which includes pre-installed tools and dependencies.
+</Info>
+
+### Resuming a Sandbox
+
+```typescript server/lib/sandbox/session.ts
+async function resumeSandbox(
+  threadId: string,
+  sandboxId: string,
+  sessionId: string
+): Promise<ResolvedSandboxSession> {
+  const sandbox = await connectSandbox(sandboxId);
+
+  if (!sandbox) {
+    await clearDestroyed(threadId);
+    throw new Error(`Sandbox ${sandboxId} not found`);
+  }
+
+  await sandbox.setTimeout(config.timeoutMs);
+
+  // Boot RPC client with existing session ID
+  const client = await boot(sandbox, sessionId);
+
+  const state = await client.getState();
+  logger.debug({ threadId, sessionId: state.sessionId }, 'Resumed session');
+
+  await updateRuntime(threadId, {
+    sandboxId: sandbox.sandboxId,
+    sessionId: state.sessionId,
+    status: 'active',
+  });
+  await markActivity(threadId);
+
+  return { client, sandbox };
+}
+```
+
+**Key Points:**
+- E2B auto-resumes paused sandboxes when reconnected
+- The RPC client is re-initialized with the existing `sessionId`
+- Session state (files, env vars, command history) is preserved
+
+### Pausing a Sandbox
+
+After task completion, sandboxes are paused to save costs:
+
+```typescript server/lib/sandbox/session.ts
+export async function pauseSession(
+  context: SlackMessageContext,
+  sandboxId: string
+): Promise<void> {
+  const threadId = getContextId(context);
+
+  try {
+    await Sandbox.betaPause(sandboxId, { apiKey: env.E2B_API_KEY });
+    await updateStatus(threadId, 'paused');
+    logger.info({ threadId, sandboxId }, 'Paused sandbox');
+  } catch (error) {
+    logger.warn({ error, threadId, sandboxId }, 'Failed to pause sandbox');
+  }
+}
+```
+
+## Session Persistence
+
+### Database Schema
+
+The `sandbox_sessions` table tracks the lifecycle:
+
+```typescript server/db/schema.ts
+export const sandboxSessions = pgTable('sandbox_sessions', {
+  threadId: text('thread_id').primaryKey(),
+  sandboxId: text('sandbox_id').notNull(),
+  sessionId: text('session_id').notNull(),
+  status: text('status').notNull().default('creating'),
+  pausedAt: timestamp('paused_at', { withTimezone: true }),
+  resumedAt: timestamp('resumed_at', { withTimezone: true }),
+  destroyedAt: timestamp('destroyed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});
+```
+
+**Status Values:**
+- `creating` - Sandbox is being created
+- `active` - Sandbox is running
+- `resuming` - Sandbox is being resumed from paused state
+- `paused` - Sandbox is paused (idle)
+- `deleting` - Sandbox is being deleted by janitor
+- `destroyed` - Sandbox has been deleted
+- `error` - Sandbox encountered an error
+
+### ThreadId Mapping
+
+The `threadId` is derived from the Slack context:
+
+```typescript
+function getContextId(context: SlackMessageContext): string {
+  const channelId = context.event.channel;
+  const threadTs = context.event.thread_ts;
+  return threadTs ? `${channelId}-${threadTs}` : channelId;
+}
+```
+
+**Examples:**
+- DM: `D12345678`
+- Channel: `C12345678`
+- Thread: `C12345678-1234567890.123456`
+
+This ensures:
+- Each thread gets its own sandbox
+- Channel-level conversations share a sandbox (if not threaded)
+- DMs get a dedicated sandbox per user
+
+## Janitor Process
+
+A background process cleans up expired sandboxes:
+
+```typescript server/lib/sandbox/janitor.ts
+async function cleanup(): Promise<void> {
+  const cutoff = new Date(Date.now() - config.autoDeleteAfterMs); // 7 days
+  const candidates = await listExpired(cutoff);
+
+  for (const session of candidates) {
+    const claimed = await claimExpired(session.threadId);
+    if (!claimed) {
+      continue;
+    }
+
+    try {
+      await Sandbox.kill(session.sandboxId, { apiKey: env.E2B_API_KEY });
+      await clearDestroyed(session.threadId);
+      logger.info(
+        { threadId: session.threadId, sandboxId: session.sandboxId },
+        'Deleted expired sandbox'
+      );
+    } catch (error) {
+      await updateStatus(session.threadId, 'paused');
+      logger.warn({ error, threadId: session.threadId }, 'Failed to delete');
+    }
+  }
+}
+
+export function startSandboxJanitor(): void {
+  timer = setInterval(() => {
+    cleanup().catch((error) => {
+      logger.error({ error }, 'Unexpected error while running sweep');
+    });
+  }, config.janitorIntervalMs); // 60 seconds
+  timer.unref();
+}
+```
+
+**Cleanup Logic:**
+1. Query for sessions with `updatedAt < cutoff` (7 days ago)
+2. Atomically claim sessions by setting status to `deleting`
+3. Kill the sandbox via E2B API
+4. Mark as `destroyed` in database
+
+<Info>
+The janitor runs every **60 seconds** and deletes sandboxes inactive for **7 days**.
+</Info>
+
+### Claiming Logic
+
+```typescript server/db/queries/sandbox.ts
+export async function claimExpired(threadId: string): Promise<boolean> {
+  const rows = await db
+    .update(sandboxSessions)
+    .set({ status: 'deleting', updatedAt: new Date() })
+    .where(
+      and(
+        eq(sandboxSessions.threadId, threadId),
+        notInArray(sandboxSessions.status, ['destroyed', 'deleting']),
+        isNull(sandboxSessions.destroyedAt)
+      )
+    )
+    .returning({ threadId: sandboxSessions.threadId });
+
+  return rows.length > 0;
+}
+```
+
+This prevents race conditions if multiple janitor instances run (e.g., during deployment).
+
+## Template Building
+
+Sandboxes are configured with custom system prompts and tools:
+
+```typescript server/lib/sandbox/config/index.ts
+export async function configureAgent(
+  sandbox: Sandbox,
+  prompt: string
+): Promise<void> {
+  const bootstrap = await buildConfig(prompt);
+
+  for (const path of bootstrap.paths) {
+    await sandbox.files.makeDir(path).catch(() => undefined);
+  }
+
+  for (const file of bootstrap.files) {
+    await sandbox.files.write(file.path, file.content);
+  }
+}
+```
+
+**Files Written:**
+- `/home/user/.pi/SYSTEM.md` - System prompt for the sandbox agent
+- `/home/user/.pi/agent/settings.json` - Agent configuration
+- `/home/user/.pi/agent/models.json` - Model configuration
+- `/home/user/.pi/agent/auth.json` - API keys
+- `/home/user/.pi/extensions/tools.ts` - Custom tool definitions
+
+These files configure the **Pi agent** running inside the sandbox.
+
+## RPC Communication
+
+Gorkie uses a custom RPC protocol over PTY to communicate with the Pi agent:
+
+```typescript server/lib/sandbox/rpc/boot.ts
+export async function boot(
+  sandbox: Sandbox,
+  sessionId?: string
+): Promise<PiRpcClient> {
+  const terminal = await sandbox.pty.create({
+    cols: 220,
+    rows: 24,
+    cwd: config.runtime.workdir,
+    envs: {
+      HACKCLUB_API_KEY: env.HACKCLUB_API_KEY,
+      AGENTMAIL_API_KEY: env.AGENTMAIL_API_KEY,
+      HOME: config.runtime.workdir,
+      TERM: 'dumb',
+    },
+    timeoutMs: 0,
+    onData: (data: Uint8Array) => {
+      if (!client) return;
+      client.handleStdout(decoder.decode(data, { stream: true }));
+    },
+  });
+
+  const pty: PtyLike = {
+    sendInput: (data) => sandbox.pty.sendInput(terminal.pid, encoder.encode(data)),
+    kill: () => terminal.kill(),
+    disconnect: () => terminal.disconnect(),
+  };
+
+  client = new PiRpcClient(pty);
+
+  const piCmd = sessionId
+    ? `pi --mode rpc --session ${sessionId}`
+    : 'pi --mode rpc';
+  await pty.sendInput(`stty -echo; exec ${piCmd}\n`);
+  await client.waitUntilReady();
+
+  return client;
+}
+```
+
+**Key Points:**
+- PTY provides a bidirectional communication channel
+- RPC messages are sent as JSON over PTY
+- The `PiRpcClient` handles request/response matching
+- If `sessionId` is provided, the Pi agent resumes that session
+
+<Warning>
+The RPC protocol is internal to Gorkie. If you modify the sandbox template, ensure the Pi agent version is compatible.
+</Warning>
+
+## Configuration
+
+Sandbox behavior is configured in `server/config.ts`:
+
+```typescript server/config.ts
+export const sandbox = {
+  template: 'gorkie-sandbox:1.1.0',
+  timeoutMs: 10 * 60 * 1000,              // 10 minutes
+  autoDeleteAfterMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+  janitorIntervalMs: 60 * 1000,           // 60 seconds
+  rpc: {
+    commandTimeoutMs: 60_000,             // 1 minute
+    startupTimeoutMs: 2 * 60 * 1000,      // 2 minutes
+  },
+  runtime: {
+    workdir: '/home/user',
+    executionTimeoutMs: 20 * 60 * 1000,   // 20 minutes
+  },
+  attachments: {
+    maxBytes: 1_000_000_000,              // 1 GB
+  },
+};
+```
+
+## Best Practices
+
+1. **Always pause after use** - Saves E2B costs and resources
+2. **Set appropriate timeouts** - Prevents runaway sandboxes
+3. **Monitor sandbox count** - E2B has account limits
+4. **Clean up regularly** - Janitor should run frequently
+5. **Handle session errors gracefully** - Always fall back to creating new sandbox
+
+## Troubleshooting
+
+### Sandbox Won't Resume
+
+If a sandbox fails to resume:
+- Check if it still exists in E2B dashboard
+- Verify `sessionId` matches the database
+- Look for `404` errors in logs (sandbox was deleted)
+- The system will automatically create a new sandbox
+
+### RPC Timeout
+
+If RPC communication times out:
+- Check if Pi agent is installed in template
+- Verify `pi` binary is in PATH
+- Check PTY output for startup errors
+- Increase `startupTimeoutMs` if needed
+
+### High Sandbox Count
+
+If you have too many sandboxes:
+- Check janitor logs for deletion failures
+- Manually delete old sandboxes in E2B dashboard
+- Lower `autoDeleteAfterMs` threshold
+- Increase `janitorIntervalMs` frequency

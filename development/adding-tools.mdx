@@ -1,0 +1,664 @@
+---
+title: Adding AI Tools
+description: Learn how to create new AI tools for Gorkie Slack bot
+---
+
+## Overview
+
+AI tools are functions that the AI can call to perform actions or retrieve information. Gorkie uses the Vercel AI SDK's `tool()` function to define tools with type-safe parameters and execution logic.
+
+There are two patterns for creating tools:
+
+1. **Context-aware tools** - Need access to Slack context and streaming (most common)
+2. **Stateless tools** - Pure functions that don't need context
+
+## Tool Anatomy
+
+Every tool has:
+
+- **Description** - Tells the AI when to use the tool
+- **Input schema** - Zod schema defining parameters
+- **Execute function** - The actual implementation
+- **Optional lifecycle hooks** - `onInputStart`, `onInputComplete`
+
+## Pattern 1: Context-Aware Tools
+
+Use this pattern when your tool needs:
+
+- Access to Slack client (to send messages, reactions, etc.)
+- Access to the message context (channel, user, timestamp)
+- Ability to stream status updates
+
+### Factory Pattern
+
+Context-aware tools use a factory function:
+
+```typescript
+import { tool } from 'ai';
+import { z } from 'zod';
+import { createTask, finishTask, updateTask } from '~/lib/ai/utils/task';
+import logger from '~/lib/logger';
+import type { SlackMessageContext, Stream } from '~/types';
+
+export const myTool = ({
+  context,
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description: 'What this tool does and when to use it',
+    inputSchema: z.object({
+      param1: z.string().describe('Description for the AI'),
+      param2: z.number().optional().describe('Optional parameter'),
+    }),
+    onInputStart: async ({ toolCallId }) => {
+      // Optional: Create a task for status tracking
+      await createTask(stream, {
+        taskId: toolCallId,
+        title: 'Starting operation',
+        status: 'pending',
+      });
+    },
+    execute: async ({ param1, param2 }, { toolCallId }) => {
+      // Update task status
+      const task = await updateTask(stream, {
+        taskId: toolCallId,
+        title: 'Performing operation',
+        details: param1,
+        status: 'in_progress',
+      });
+
+      try {
+        // Your tool logic here
+        const result = await performOperation(param1, param2);
+
+        // Log success
+        logger.info({ param1, param2 }, 'Operation completed');
+
+        // Mark task complete
+        await finishTask(stream, {
+          status: 'complete',
+          taskId: task,
+          output: 'Operation successful',
+        });
+
+        // Return result to AI
+        return {
+          success: true,
+          data: result,
+        };
+      } catch (error) {
+        // Log error
+        logger.error({ error, param1 }, 'Operation failed');
+
+        // Mark task failed
+        await finishTask(stream, {
+          status: 'error',
+          taskId: task,
+          output: 'Operation failed',
+        });
+
+        // Return error to AI
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  });
+```
+
+### Real Example: React Tool
+
+Adds emoji reactions to Slack messages:
+
+```typescript server/lib/ai/tools/chat/react.ts
+import { tool } from 'ai';
+import { z } from 'zod';
+import { createTask, finishTask, updateTask } from '~/lib/ai/utils/task';
+import logger from '~/lib/logger';
+import type { SlackMessageContext, Stream } from '~/types';
+import { getContextId } from '~/utils/context';
+import { errorMessage, toLogError } from '~/utils/error';
+
+export const react = ({
+  context,
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'Add emoji reactions to the current Slack message. Provide emoji names without surrounding colons.',
+    inputSchema: z.object({
+      emojis: z
+        .array(z.string().min(1))
+        .nonempty()
+        .describe('Emoji names to react with (unicode or custom names).'),
+    }),
+    onInputStart: async ({ toolCallId }) => {
+      await createTask(stream, {
+        taskId: toolCallId,
+        title: 'Adding reaction',
+        status: 'pending',
+      });
+    },
+    execute: async ({ emojis }, { toolCallId }) => {
+      const ctxId = getContextId(context);
+      const channelId = context.event.channel;
+      const messageTs = context.event.ts;
+
+      if (!(channelId && messageTs)) {
+        logger.warn(
+          { ctxId, channel: channelId, messageTs, emojis },
+          'Failed to add Slack reactions: missing channel or message id'
+        );
+        return { success: false, error: 'Missing Slack channel or message id' };
+      }
+
+      const task = await updateTask(stream, {
+        taskId: toolCallId,
+        title: 'Adding reaction',
+        details: emojis.join(', '),
+        status: 'in_progress',
+      });
+
+      try {
+        for (const emoji of emojis) {
+          await context.client.reactions.add({
+            channel: channelId,
+            name: emoji.replace(/:/g, ''),
+            timestamp: messageTs,
+          });
+        }
+
+        logger.info(
+          { ctxId, channel: channelId, messageTs, emojis },
+          'Added reactions'
+        );
+
+        await finishTask(stream, {
+          status: 'complete',
+          taskId: task,
+          output: `Added: ${emojis.join(', ')}`,
+        });
+
+        return {
+          success: true,
+          content: `Added reactions: ${emojis.join(', ')}`,
+        };
+      } catch (error) {
+        logger.error(
+          {
+            ...toLogError(error),
+            ctxId,
+            channel: channelId,
+            messageTs,
+            emojis,
+          },
+          'Failed to add Slack reactions'
+        );
+
+        await finishTask(stream, {
+          status: 'error',
+          taskId: task,
+          output: errorMessage(error),
+        });
+
+        return {
+          success: false,
+          error: errorMessage(error),
+        };
+      }
+    },
+  });
+```
+
+## Pattern 2: Stateless Tools
+
+Use this pattern for tools that:
+
+- Don't need Slack context
+- Are pure functions
+- Call external APIs or perform calculations
+
+### Simple Export
+
+Stateless tools are exported directly:
+
+```typescript
+import { tool } from 'ai';
+import { z } from 'zod';
+import logger from '~/lib/logger';
+import type { Stream } from '~/types';
+
+export const myStatelessTool = ({ stream }: { stream: Stream }) =>
+  tool({
+    description: 'Performs a stateless operation',
+    inputSchema: z.object({
+      query: z.string().min(1).describe('The search query'),
+    }),
+    execute: async ({ query }) => {
+      try {
+        const result = await externalApiCall(query);
+        return result;
+      } catch (error) {
+        logger.error({ error, query }, 'API call failed');
+        throw error;
+      }
+    },
+  });
+```
+
+### Real Example: Get Weather
+
+Fetches weather data from an external API:
+
+```typescript server/lib/ai/tools/chat/get-weather.ts
+import { tool } from 'ai';
+import { z } from 'zod';
+import { createTask, finishTask, updateTask } from '~/lib/ai/utils/task';
+import logger from '~/lib/logger';
+import type { SlackMessageContext, Stream } from '~/types';
+import { toLogError } from '~/utils/error';
+
+export const getWeather = ({
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description: 'Get the current weather at a location',
+    inputSchema: z.object({
+      latitude: z.number(),
+      longitude: z.number(),
+    }),
+    onInputStart: async ({ toolCallId }) => {
+      await createTask(stream, {
+        taskId: toolCallId,
+        title: 'Getting weather',
+        status: 'pending',
+      });
+    },
+    execute: async ({ latitude, longitude }, { toolCallId }) => {
+      const task = await updateTask(stream, {
+        taskId: toolCallId,
+        title: 'Getting weather',
+        details: `${latitude}, ${longitude}`,
+        status: 'in_progress',
+      });
+
+      try {
+        const response = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m&hourly=temperature_2m&daily=sunrise,sunset&timezone=auto`
+        );
+
+        if (!response.ok) {
+          throw new Error(
+            `Weather API request failed with status ${response.status}`
+          );
+        }
+
+        const weatherData: unknown = await response.json();
+        await finishTask(stream, { status: 'complete', taskId: task });
+        return weatherData;
+      } catch (error) {
+        logger.error({ ...toLogError(error) }, 'Error in getWeather');
+        await finishTask(stream, {
+          status: 'error',
+          taskId: task,
+          output: 'Failed to fetch weather',
+        });
+        return {
+          success: false,
+          error: 'Failed to fetch weather',
+        };
+      }
+    },
+  });
+```
+
+## Zod Schema Guidelines
+
+### Use Descriptive Descriptions
+
+The AI uses parameter descriptions to understand how to use the tool:
+
+```typescript
+inputSchema: z.object({
+  query: z
+    .string()
+    .min(1)
+    .max(500)
+    .describe(
+      "The web search query. Be specific and clear about what you're looking for."
+    ),
+  numResults: z
+    .number()
+    .int()
+    .min(1)
+    .max(10)
+    .optional()
+    .describe('Number of search results to return (default: 5)'),
+}),
+```
+
+### Constrain Values
+
+Use Zod's validation to prevent invalid inputs:
+
+```typescript
+inputSchema: z.object({
+  temperature: z.number().min(0).max(2).default(0.7),
+  maxTokens: z.number().int().min(1).max(4000).optional(),
+  emojis: z.array(z.string().min(1)).nonempty().max(5),
+}),
+```
+
+### Provide Defaults
+
+```typescript
+inputSchema: z.object({
+  type: z.enum(['reply', 'message']).default('reply'),
+  offset: z.number().int().min(0).optional().default(0),
+}),
+```
+
+## Return Value Conventions
+
+### Success Response
+
+Return structured data the AI can understand:
+
+```typescript
+return {
+  success: true,
+  data: result,
+  message: 'Operation completed successfully',
+};
+```
+
+### Error Response
+
+Always include error details:
+
+```typescript
+return {
+  success: false,
+  error: errorMessage(error),
+};
+```
+
+### Rich Data
+
+For complex results, return structured objects:
+
+```typescript
+return {
+  success: true,
+  results: [
+    { title: 'Result 1', url: 'https://...', snippet: '...' },
+    { title: 'Result 2', url: 'https://...', snippet: '...' },
+  ],
+  count: 2,
+};
+```
+
+## Task Tracking
+
+### Create Task
+
+Start tracking when the tool begins:
+
+```typescript
+onInputStart: async ({ toolCallId }) => {
+  await createTask(stream, {
+    taskId: toolCallId,
+    title: 'Starting operation',
+    status: 'pending',
+  });
+},
+```
+
+### Update Task
+
+Show progress during execution:
+
+```typescript
+const task = await updateTask(stream, {
+  taskId: toolCallId,
+  title: 'Processing data',
+  details: 'Processing 10 items...',
+  status: 'in_progress',
+});
+```
+
+### Finish Task
+
+Mark complete or failed:
+
+```typescript
+// Success
+await finishTask(stream, {
+  status: 'complete',
+  taskId: task,
+  output: 'Processed 10 items successfully',
+  sources: [{ type: 'url', text: 'Source', url: 'https://...' }],
+});
+
+// Error
+await finishTask(stream, {
+  status: 'error',
+  taskId: task,
+  output: errorMessage(error),
+});
+```
+
+## Registering Tools
+
+Add your tool to the orchestrator:
+
+<Steps>
+  <Step title="Create the tool file">
+    Create a new file in `server/lib/ai/tools/chat/`:
+    
+    ```bash
+    touch server/lib/ai/tools/chat/my-new-tool.ts
+    ```
+  </Step>
+
+  <Step title="Import in the orchestrator">
+    Open `server/lib/ai/agents/orchestrator.ts` and import your tool:
+    
+    ```typescript
+    import { myNewTool } from '~/lib/ai/tools/chat/my-new-tool';
+    ```
+  </Step>
+
+  <Step title="Register the tool">
+    Add it to the tools object:
+    
+    ```typescript
+    const tools = {
+      reply: reply({ context, stream }),
+      react: react({ context, stream }),
+      myNewTool: myNewTool({ context, stream }),
+      // ... other tools
+    };
+    ```
+  </Step>
+
+  <Step title="Test the tool">
+    Restart the dev server and test in Slack:
+    
+    ```bash
+    bun run dev
+    ```
+    
+    Ask the bot to use your new tool!
+  </Step>
+</Steps>
+
+## Example: Creating a New Tool from Scratch
+
+Let's create a tool that fetches a random programming joke:
+
+```typescript server/lib/ai/tools/chat/get-joke.ts
+import { tool } from 'ai';
+import { z } from 'zod';
+import { createTask, finishTask, updateTask } from '~/lib/ai/utils/task';
+import logger from '~/lib/logger';
+import type { SlackMessageContext, Stream } from '~/types';
+import { toLogError } from '~/utils/error';
+
+interface JokeResponse {
+  type: string;
+  setup?: string;
+  delivery?: string;
+  joke?: string;
+  error?: boolean;
+}
+
+export const getJoke = ({
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'Get a random programming joke. Use this when the user asks for humor or a joke.',
+    inputSchema: z.object({
+      category: z
+        .enum(['programming', 'pun', 'any'])
+        .optional()
+        .default('programming')
+        .describe('The category of joke to fetch'),
+    }),
+    onInputStart: async ({ toolCallId }) => {
+      await createTask(stream, {
+        taskId: toolCallId,
+        title: 'Fetching joke',
+        status: 'pending',
+      });
+    },
+    execute: async ({ category }, { toolCallId }) => {
+      const task = await updateTask(stream, {
+        taskId: toolCallId,
+        title: 'Fetching joke',
+        details: `Category: ${category}`,
+        status: 'in_progress',
+      });
+
+      try {
+        const response = await fetch(
+          `https://v2.jokeapi.dev/joke/${category}?safe-mode`
+        );
+
+        if (!response.ok) {
+          throw new Error(`Joke API returned status ${response.status}`);
+        }
+
+        const data = (await response.json()) as JokeResponse;
+
+        if (data.error) {
+          throw new Error('Failed to fetch joke');
+        }
+
+        const joke =
+          data.type === 'twopart' && data.setup && data.delivery
+            ? `${data.setup}\n${data.delivery}`
+            : data.joke ?? 'No joke available';
+
+        logger.info({ category, type: data.type }, 'Fetched joke');
+
+        await finishTask(stream, {
+          status: 'complete',
+          taskId: task,
+          output: 'Got a joke!',
+        });
+
+        return {
+          success: true,
+          joke,
+          category: data.type,
+        };
+      } catch (error) {
+        logger.error({ ...toLogError(error), category }, 'Failed to fetch joke');
+
+        await finishTask(stream, {
+          status: 'error',
+          taskId: task,
+          output: 'Failed to fetch joke',
+        });
+
+        return {
+          success: false,
+          error: 'Failed to fetch joke',
+        };
+      }
+    },
+  });
+```
+
+Now register it in the orchestrator, and the AI can fetch jokes on demand!
+
+## Best Practices
+
+### Clear Descriptions
+
+Write clear tool descriptions that tell the AI:
+- **What** the tool does
+- **When** to use it
+- **What** parameters it needs
+
+### Validate Inputs
+
+Use Zod schemas to validate all inputs:
+- Constrain string lengths
+- Validate number ranges
+- Require specific enum values
+- Use `.nonempty()` for arrays that must have items
+
+### Handle Errors Gracefully
+
+Always catch and log errors:
+- Use try-catch blocks
+- Log errors with context
+- Return structured error responses
+- Update task status to 'error'
+
+### Log with Context
+
+Include relevant information in logs:
+```typescript
+logger.info(
+  { userId, channel, action: 'sendMessage' },
+  'Message sent successfully'
+);
+```
+
+### Stream Updates
+
+Keep users informed with task updates:
+- Create task on start
+- Update during execution
+- Finish with success or error
+
+### Return Structured Data
+
+Make it easy for the AI to use your results:
+- Use consistent response shapes
+- Include `success` boolean
+- Provide meaningful error messages
+- Return rich data when helpful
+
+## Next Steps
+
+- Review [existing tools](/development/project-structure#ai-layer-serverlibai) for inspiration
+- Learn about [code style guidelines](/development/code-style)
+- Explore the [Vercel AI SDK documentation](https://sdk.vercel.ai/docs)

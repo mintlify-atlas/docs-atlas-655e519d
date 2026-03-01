@@ -1,0 +1,247 @@
+---
+title: Getting Started
+description: Set up your local development environment for Gorkie Slack bot
+---
+
+## Prerequisites
+
+Before you begin, ensure you have the following installed:
+
+- **Bun** runtime (latest version)
+- **Redis** for caching and rate limiting
+- **PostgreSQL** database (via Neon or local)
+- **Node.js** (for some tooling compatibility)
+
+## Environment Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone <repository-url>
+    cd gorkie-slack
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    ```bash
+    bun install
+    ```
+  </Step>
+
+  <Step title="Configure environment variables">
+    Copy the example environment file and fill in your credentials:
+    
+    ```bash
+    cp .env.example .env
+    ```
+    
+    Required environment variables:
+    
+    ```bash
+    # Slack
+    SLACK_BOT_TOKEN=xoxb-...
+    SLACK_SIGNING_SECRET=...
+    SLACK_APP_TOKEN=xapp-...  # Optional, for Socket Mode
+    SLACK_SOCKET_MODE=false   # Set to true for local development
+    PORT=3000
+    
+    # Redis
+    REDIS_URL=redis://localhost:6379
+    
+    # Database
+    DATABASE_URL=postgresql://...
+    
+    # AI Providers
+    OPENROUTER_API_KEY=sk-or-...
+    HACKCLUB_API_KEY=sk-hc-...
+    
+    # Services
+    EXA_API_KEY=...           # For web search
+    E2B_API_KEY=...           # For code sandboxes
+    AGENTMAIL_API_KEY=am_...  # For sandbox email
+    
+    # Logging
+    LOG_LEVEL=info
+    LOG_DIRECTORY=logs
+    ```
+  </Step>
+
+  <Step title="Set up the database">
+    Generate and push the database schema:
+    
+    ```bash
+    bun run db:generate
+    bun run db:push
+    ```
+    
+    Optional: Open Drizzle Studio to view your database:
+    
+    ```bash
+    bun run db:studio
+    ```
+  </Step>
+
+  <Step title="Start the development server">
+    ```bash
+    bun run dev
+    ```
+    
+    This runs the bot in watch mode, automatically reloading when you make changes.
+  </Step>
+</Steps>
+
+## Available NPM Scripts
+
+The project includes several npm scripts for development and maintenance:
+
+### Development & Running
+
+```bash
+bun run dev        # Development server with watch mode
+bun run start      # Production server
+```
+
+### Database Management
+
+```bash
+bun run db:studio    # Open Drizzle Studio (database GUI)
+bun run db:push      # Push schema changes to database
+bun run db:generate  # Generate migration files
+bun run db:migrate   # Run migrations
+```
+
+### Code Quality
+
+```bash
+bun run check              # Check formatting and linting
+bun run check:write        # Auto-fix formatting and safe linting issues
+bun run check:unsafe       # Auto-fix including unsafe changes
+bun run check:spelling     # Run spell checker
+bun run typecheck          # Run TypeScript type checking
+```
+
+### Sandbox
+
+```bash
+bun run sandbox:build  # Build sandbox template
+```
+
+## Development Workflow
+
+### Watch Mode
+
+The `dev` script runs Bun in watch mode, which automatically restarts the server when you save changes:
+
+```bash
+bun run dev
+```
+
+This is the recommended way to develop, as it provides instant feedback.
+
+### Testing the Bot Locally
+
+<Steps>
+  <Step title="Enable Socket Mode">
+    For local development, set `SLACK_SOCKET_MODE=true` in your `.env` file. This allows the bot to connect to Slack without exposing a public URL.
+  </Step>
+
+  <Step title="Configure your Slack app">
+    In the Slack API dashboard:
+    - Enable Socket Mode
+    - Generate an App-Level Token with `connections:write` scope
+    - Add the token to `SLACK_APP_TOKEN` in your `.env`
+  </Step>
+
+  <Step title="Start the bot">
+    ```bash
+    bun run dev
+    ```
+    
+    You should see:
+    ```
+    Slack Bolt app connected via Socket Mode
+    ```
+  </Step>
+
+  <Step title="Test in Slack">
+    - Mention `@gorkie` in a channel where the bot is installed
+    - Send a direct message to the bot
+    - Reply to a message in a thread where the bot participated
+  </Step>
+</Steps>
+
+### Making Code Changes
+
+1. **Edit TypeScript files** in the `server/` directory
+2. **Save your changes** - the dev server will automatically reload
+3. **Check logs** for errors or issues
+4. **Test in Slack** to verify your changes work
+
+### Pre-commit Hooks
+
+The project uses Lefthook for Git hooks. When you commit:
+
+```bash
+git add .
+git commit -m "feat: add new feature"
+```
+
+The following checks run automatically:
+- Code formatting (Biome)
+- Linting (Biome)
+- Type checking (TypeScript)
+- Spell checking
+- Commit message validation (Conventional Commits)
+
+If any checks fail, the commit will be rejected. Fix the issues and try again.
+
+## Troubleshooting
+
+### Redis Connection Issues
+
+If you see Redis connection errors:
+
+```bash
+# Check if Redis is running
+redis-cli ping
+
+# Start Redis (macOS with Homebrew)
+brew services start redis
+
+# Start Redis (Linux)
+sudo systemctl start redis
+```
+
+### Database Migration Issues
+
+If migrations fail:
+
+```bash
+# Regenerate migrations
+bun run db:generate
+
+# Force push schema (development only!)
+bun run db:push
+```
+
+### Type Errors
+
+Run the type checker to see all TypeScript errors:
+
+```bash
+bun run typecheck
+```
+
+### Socket Mode Not Connecting
+
+Verify:
+- `SLACK_SOCKET_MODE=true` is set
+- `SLACK_APP_TOKEN` is a valid App-Level Token
+- Socket Mode is enabled in your Slack app settings
+- The app has the required OAuth scopes
+
+## Next Steps
+
+- Learn about [Code Style Guidelines](/development/code-style)
+- Explore the [Project Structure](/development/project-structure)
+- Create your first [AI Tool](/development/adding-tools)

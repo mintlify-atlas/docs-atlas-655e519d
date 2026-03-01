@@ -1,0 +1,460 @@
+---
+title: Deployment Guide
+description: Deploy Gorkie to production environments
+---
+
+This guide covers deploying Gorkie Slack bot to production environments.
+
+## Prerequisites
+
+Before deploying, ensure you have:
+
+- A Slack app created with the [provided manifest](https://github.com/imdevarsh/gorkie-slack/blob/main/slack-manifest.json)
+- All required API keys and credentials (see [Environment Variables](/configuration/environment-variables))
+- A PostgreSQL database (Neon, Supabase, or self-hosted)
+- A Redis instance (Upstash, Redis Cloud, or self-hosted)
+
+## Production Deployment Options
+
+### Option 1: Socket Mode (Recommended for Quick Setup)
+
+Socket Mode uses WebSocket connections and doesn't require a public URL.
+
+<Steps>
+  <Step title="Configure Socket Mode">
+    Set these environment variables:
+    
+    ```bash
+    SLACK_SOCKET_MODE=true
+    SLACK_APP_TOKEN="xapp-your-app-token"
+    SLACK_BOT_TOKEN="xoxb-your-bot-token"
+    SLACK_SIGNING_SECRET="your-signing-secret"
+    NODE_ENV="production"
+    ```
+    
+    The `SLACK_APP_TOKEN` requires `connections:write` scope in your Slack app.
+  </Step>
+  
+  <Step title="Install dependencies">
+    ```bash
+    bun install --production
+    ```
+  </Step>
+  
+  <Step title="Run database migrations">
+    ```bash
+    bun run db:push
+    ```
+  </Step>
+  
+  <Step title="Start the application">
+    ```bash
+    bun run start
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Socket Mode is great for getting started quickly but HTTP mode is recommended for high-scale production deployments.
+</Note>
+
+### Option 2: HTTP Mode (Recommended for Production)
+
+HTTP mode uses webhook endpoints and requires a public URL.
+
+<Steps>
+  <Step title="Configure HTTP Mode">
+    Set these environment variables:
+    
+    ```bash
+    SLACK_SOCKET_MODE=false
+    PORT=3000
+    SLACK_BOT_TOKEN="xoxb-your-bot-token"
+    SLACK_SIGNING_SECRET="your-signing-secret"
+    NODE_ENV="production"
+    ```
+  </Step>
+  
+  <Step title="Set up Request URL in Slack">
+    Configure your Slack app's Request URL:
+    
+    1. Go to your Slack app settings
+    2. Navigate to **Event Subscriptions**
+    3. Set Request URL to: `https://your-domain.com/slack/events`
+    4. Slack will verify the endpoint
+  </Step>
+  
+  <Step title="Deploy with a reverse proxy">
+    Use nginx, Caddy, or your cloud provider's load balancer to handle HTTPS:
+    
+    ```nginx
+    # Example nginx configuration
+    server {
+      listen 443 ssl;
+      server_name your-domain.com;
+      
+      ssl_certificate /path/to/cert.pem;
+      ssl_certificate_key /path/to/key.pem;
+      
+      location /slack/events {
+        proxy_pass http://localhost:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Start the application">
+    ```bash
+    bun run start
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Always use HTTPS in production. Slack requires HTTPS for webhook endpoints.
+</Warning>
+
+## Platform-Specific Guides
+
+### Railway
+
+<Steps>
+  <Step title="Create a new Railway project">
+    1. Connect your GitHub repository
+    2. Railway will auto-detect the Bun runtime
+  </Step>
+  
+  <Step title="Configure environment variables">
+    Add all required environment variables in the Railway dashboard.
+  </Step>
+  
+  <Step title="Add databases">
+    1. Add PostgreSQL plugin
+    2. Add Redis plugin
+    3. Railway will automatically set `DATABASE_URL` and `REDIS_URL`
+  </Step>
+  
+  <Step title="Set start command">
+    Configure the start command:
+    
+    ```bash
+    bun run start
+    ```
+  </Step>
+  
+  <Step title="Deploy">
+    Push to your repository or click "Deploy" in Railway.
+  </Step>
+</Steps>
+
+### Render
+
+<Steps>
+  <Step title="Create a new Web Service">
+    1. Connect your GitHub repository
+    2. Select "Bun" as the runtime
+  </Step>
+  
+  <Step title="Configure build settings">
+    - Build Command: `bun install`
+    - Start Command: `bun run start`
+  </Step>
+  
+  <Step title="Add environment variables">
+    Add all required variables in the Render dashboard.
+  </Step>
+  
+  <Step title="Add databases">
+    1. Create a PostgreSQL instance
+    2. Create a Redis instance
+    3. Link them to your web service
+  </Step>
+  
+  <Step title="Deploy">
+    Click "Create Web Service" to deploy.
+  </Step>
+</Steps>
+
+### Docker
+
+While there's no production Dockerfile included, you can create one:
+
+```dockerfile
+FROM oven/bun:1-slim
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json bun.lockb ./
+
+# Install production dependencies
+RUN bun install --production
+
+# Copy source code
+COPY server/ ./server/
+COPY drizzle.config.ts tsconfig.json ./
+
+# Run database migrations
+RUN bun run db:generate
+
+# Expose port (only needed for HTTP mode)
+EXPOSE 3000
+
+# Start the application
+CMD ["bun", "run", "start"]
+```
+
+Build and run:
+
+```bash
+# Build
+docker build -t gorkie-slack .
+
+# Run
+docker run -d \
+  --name gorkie \
+  --env-file .env \
+  -p 3000:3000 \
+  gorkie-slack
+```
+
+### VPS / Self-Hosted
+
+<Steps>
+  <Step title="Install Bun">
+    ```bash
+    curl -fsSL https://bun.sh/install | bash
+    ```
+  </Step>
+  
+  <Step title="Clone and setup">
+    ```bash
+    git clone https://github.com/imdevarsh/gorkie-slack.git
+    cd gorkie-slack
+    bun install
+    cp .env.example .env
+    # Edit .env with your values
+    ```
+  </Step>
+  
+  <Step title="Run database migrations">
+    ```bash
+    bun run db:push
+    ```
+  </Step>
+  
+  <Step title="Set up process manager">
+    Use PM2, systemd, or another process manager. See [Process Management](#process-management) below.
+  </Step>
+</Steps>
+
+## Process Management
+
+### Using PM2
+
+```bash
+# Install PM2
+bun install -g pm2
+
+# Start Gorkie
+pm2 start "bun run start" --name gorkie
+
+# Save PM2 configuration
+pm2 save
+
+# Setup PM2 to start on boot
+pm2 startup
+```
+
+View logs:
+
+```bash
+pm2 logs gorkie
+```
+
+### Using systemd
+
+Create `/etc/systemd/system/gorkie.service`:
+
+```ini
+[Unit]
+Description=Gorkie Slack Bot
+After=network.target
+
+[Service]
+Type=simple
+User=your-user
+WorkingDirectory=/path/to/gorkie-slack
+EnvironmentFile=/path/to/gorkie-slack/.env
+ExecStart=/home/your-user/.bun/bin/bun run start
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl enable gorkie
+sudo systemctl start gorkie
+sudo systemctl status gorkie
+```
+
+View logs:
+
+```bash
+sudo journalctl -u gorkie -f
+```
+
+## Health Checks
+
+Gorkie doesn't include a built-in health check endpoint, but you can implement one:
+
+```typescript
+// Add to server/index.ts for HTTP mode
+if (!socketMode && receiver) {
+  receiver.router.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: Date.now() });
+  });
+}
+```
+
+For Socket Mode, monitor the process and check logs for connection status.
+
+## Monitoring
+
+### Application Logs
+
+Gorkie uses Pino for structured logging. Logs are written to:
+
+- Console (stdout/stderr)
+- Log files in `LOG_DIRECTORY` (default: `./logs`)
+
+View logs:
+
+```bash
+# PM2
+pm2 logs gorkie
+
+# systemd
+sudo journalctl -u gorkie -f
+
+# Direct file
+tail -f logs/combined.log
+```
+
+### Langfuse Observability
+
+If configured, Langfuse provides AI tracing:
+
+1. Set `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_BASEURL`
+2. View traces at [https://cloud.langfuse.com](https://cloud.langfuse.com)
+3. Monitor model calls, latencies, and costs
+
+## Database Migrations
+
+Run migrations during deployment:
+
+```bash
+# Push schema changes to database
+bun run db:push
+
+# Or generate and run migrations
+bun run db:generate
+bun run db:migrate
+```
+
+See [Database Setup](/configuration/database-setup) for more details.
+
+## Performance Optimization
+
+### Resource Allocation
+
+- **Memory**: Allocate at least 512MB, recommended 1GB+
+- **CPU**: 1 vCPU minimum, 2+ recommended for busy workspaces
+
+### Environment Settings
+
+```bash
+# Increase Node.js memory limit
+NODE_OPTIONS="--max-old-space-size=2048"
+
+# Production mode
+NODE_ENV="production"
+
+# Optimized logging
+LOG_LEVEL="warn"
+```
+
+### Redis Configuration
+
+Use Redis for caching user permissions and rate limiting:
+
+- Connection pool: Handled by Bun's `RedisClient`
+- Persistence: Enable RDB or AOF in Redis config
+- Eviction: Set `maxmemory-policy` to `allkeys-lru`
+
+See [Redis Setup](/configuration/redis-setup) for details.
+
+## Troubleshooting
+
+### Socket Mode Connection Issues
+
+- Verify `SLACK_APP_TOKEN` has `connections:write` scope
+- Check firewall allows outbound WebSocket connections
+- Review logs for connection errors
+
+### HTTP Mode Request Verification Failed
+
+- Ensure `SLACK_SIGNING_SECRET` is correct
+- Verify HTTPS is properly configured
+- Check reverse proxy passes headers correctly
+
+### Database Connection Errors
+
+- Verify `DATABASE_URL` format and credentials
+- Check database is accessible from deployment environment
+- Ensure SSL mode matches database requirements
+
+### Redis Connection Errors
+
+- Verify `REDIS_URL` format and credentials
+- Check Redis is accessible from deployment environment
+- Test connection: `redis-cli -u $REDIS_URL ping`
+
+## Security Checklist
+
+<Check>
+  All environment variables stored securely (not in code)
+</Check>
+<Check>
+  HTTPS enabled for HTTP mode deployments
+</Check>
+<Check>
+  Database uses SSL/TLS connections
+</Check>
+<Check>
+  Redis uses authentication and SSL (if exposed)
+</Check>
+<Check>
+  Firewall configured to allow only necessary ports
+</Check>
+<Check>
+  Regular updates of dependencies: `bun update`
+</Check>
+<Check>
+  Monitoring and alerting configured
+</Check>
+<Check>
+  Log files rotated and secured
+</Check>
+
+## Next Steps
+
+- [Configure environment variables](/configuration/environment-variables)
+- [Set up Redis](/configuration/redis-setup)
+- [Set up database](/configuration/database-setup)

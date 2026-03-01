@@ -1,0 +1,361 @@
+---
+title: Project Structure
+description: Understanding the codebase organization of Gorkie Slack bot
+---
+
+## Overview
+
+Gorkie follows a modular architecture organized by feature and layer. The main application code lives in the `server/` directory.
+
+```
+server/
+  index.ts              # Entry point, OpenTelemetry setup
+  env.ts                # Environment validation
+  config.ts             # Application constants
+  lib/                  # Core libraries
+  slack/                # Slack-specific code
+  db/                   # Database layer
+  types/                # TypeScript type definitions
+  utils/                # Utility functions
+  scripts/              # Build and maintenance scripts
+```
+
+## Entry Point
+
+### server/index.ts
+
+The application entry point sets up:
+
+- **OpenTelemetry** for observability (using Langfuse)
+- **Error handlers** for unhandled rejections and exceptions
+- **Slack Bolt app** initialization
+- **Background services** (sandbox janitor, scheduled task runner)
+
+```typescript server/index.ts
+import { LangfuseSpanProcessor } from '@langfuse/otel';
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { env } from '~/env';
+import logger from '~/lib/logger';
+import { startSandboxJanitor } from '~/lib/sandbox/janitor';
+import { startScheduledTaskRunner } from '~/lib/tasks/runner';
+import { createSlackApp } from '~/slack/app';
+
+const sdk = new NodeSDK({
+  spanProcessors: [new LangfuseSpanProcessor()],
+});
+
+sdk.start();
+
+async function main() {
+  startSandboxJanitor();
+  const { app, socketMode } = createSlackApp();
+  startScheduledTaskRunner(app.client);
+
+  if (socketMode) {
+    await app.start();
+    logger.info('Slack Bolt app connected via Socket Mode');
+    return;
+  }
+
+  await app.start(env.PORT);
+  logger.info({ port: env.PORT }, 'Slack Bolt app listening for events');
+}
+```
+
+## Configuration
+
+### server/env.ts
+
+Environment variables are validated using `@t3-oss/env-core` with Zod schemas:
+
+```typescript server/env.ts
+import { createEnv } from '@t3-oss/env-core';
+import { z } from 'zod';
+
+export const env = createEnv({
+  server: {
+    // Slack
+    SLACK_BOT_TOKEN: z.string().min(1),
+    SLACK_SIGNING_SECRET: z.string().min(1),
+    SLACK_APP_TOKEN: z.string().optional(),
+    
+    // Database
+    DATABASE_URL: z.string().url(),
+    
+    // AI Providers
+    OPENROUTER_API_KEY: z.string().min(1).startsWith('sk-or-'),
+    
+    // ... more variables
+  },
+  runtimeEnv: process.env,
+});
+```
+
+### server/config.ts
+
+Application constants and configuration:
+
+```typescript server/config.ts
+export const sandbox = {
+  template: 'gorkie-sandbox:1.1.0',
+  timeoutMs: 10 * 60 * 1000,
+  autoDeleteAfterMs: 7 * 24 * 60 * 60 * 1000,
+  janitorIntervalMs: 60 * 1000,
+  // ...
+};
+```
+
+## Library Layer (server/lib/)
+
+Core application logic organized by feature.
+
+### AI Layer (server/lib/ai/)
+
+AI-related functionality using Vercel AI SDK:
+
+```
+server/lib/ai/
+  prompts/              # System prompts
+    chat/               # Chat-specific prompts
+      core.ts           # Core system prompt
+      personality.ts    # Bot personality traits
+      tools.ts          # Tool usage guidelines
+      examples.ts       # Example interactions
+    sandbox/            # Code sandbox prompts
+  tools/                # AI tool definitions
+    chat/               # Chat tools (reply, react, search, etc.)
+    tasks/              # Scheduled task tools
+  agents/               # AI agents
+    orchestrator.ts     # Main chat orchestration
+    scheduled-task.ts   # Scheduled task execution
+  providers.ts          # AI model provider configuration
+  exa.ts                # Exa web search client
+  utils/                # AI utility functions
+    task.ts             # Task status tracking
+    stream.ts           # Streaming utilities
+```
+
+#### Prompts
+
+Prompts are modular and composable:
+
+- **chat/core.ts** - Core system instructions
+- **chat/personality.ts** - Bot personality and tone
+- **chat/tools.ts** - How to use tools effectively
+- **chat/examples.ts** - Example interactions for few-shot learning
+
+#### Tools
+
+AI tools follow two patterns (see [Adding Tools](/development/adding-tools)):
+
+- **Context-aware tools** - Use factory pattern, receive `context` and `stream`
+- **Stateless tools** - Simple exports, no context needed
+
+#### Providers
+
+AI model configuration using Vercel AI SDK:
+
+```typescript server/lib/ai/providers.ts
+import { openrouter } from '@openrouter/ai-sdk-provider';
+import { env } from '~/env';
+
+export const orchestratorModel = openrouter('anthropic/claude-3.5-sonnet');
+```
+
+### Slack Layer (server/slack/)
+
+Slack integration using Bolt SDK:
+
+```
+server/slack/
+  app.ts                # Slack app initialization
+  conversations.ts      # Message history fetching
+  events/               # Event handlers
+    message-create/     # Message creation handlers
+      utils/            # Message processing utilities
+```
+
+### Database Layer (server/db/)
+
+Database schema and queries using Drizzle ORM:
+
+```
+server/db/
+  index.ts              # Database client
+  schema.ts             # Table schemas
+  queries/              # Query functions
+    sandbox.ts          # Sandbox session queries
+    scheduled-tasks.ts  # Scheduled task queries
+```
+
+#### Schema Definition
+
+```typescript server/db/schema.ts
+import { pgTable, text, timestamp, boolean } from 'drizzle-orm/pg-core';
+
+export const scheduledTasks = pgTable('scheduled_tasks', {
+  id: text('id').primaryKey(),
+  creatorUserId: text('creator_user_id').notNull(),
+  prompt: text('prompt').notNull(),
+  cronExpression: text('cron_expression').notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  nextRunAt: timestamp('next_run_at', { withTimezone: true }).notNull(),
+  // ...
+});
+
+export type ScheduledTask = typeof scheduledTasks.$inferSelect;
+export type NewScheduledTask = typeof scheduledTasks.$inferInsert;
+```
+
+### Other Libraries
+
+- **server/lib/allowed-users.ts** - User permission caching
+- **server/lib/kv.ts** - Redis client and rate limiting
+- **server/lib/logger.ts** - Pino logger configuration
+- **server/lib/sandbox/** - E2B code sandbox management
+- **server/lib/tasks/** - Scheduled task runner
+- **server/lib/validators/** - Input validation schemas
+
+## Types (server/types/)
+
+TypeScript type definitions organized by domain:
+
+```
+server/types/
+  index.ts              # Re-exports all types
+  activity.ts           # Activity tracking types
+  slack.ts              # Slack-specific types
+  stream.ts             # Streaming types
+  ai/                   # AI-related types
+  sandbox/              # Sandbox types
+  slack/                # Extended Slack types
+```
+
+### Common Types
+
+```typescript
+export interface SlackMessageContext {
+  event: {
+    channel?: string;
+    user?: string;
+    ts?: string;
+    thread_ts?: string;
+    text?: string;
+  };
+  client: WebClient;
+}
+
+export interface Stream {
+  // Streaming interface for AI responses
+}
+```
+
+## Utils (server/utils/)
+
+Utility functions for common operations:
+
+- **context.ts** - Context ID generation and parsing
+- **error.ts** - Error handling utilities
+- **messages.ts** - Message formatting
+- **users.ts** - User info fetching
+- **triggers.ts** - Message trigger detection
+- **slack.ts** - Slack API helpers
+- **images.ts** - Image handling
+- **text.ts** - Text processing
+
+## Key Design Patterns
+
+### Dependency Injection
+
+Context and dependencies are passed explicitly:
+
+```typescript
+export const reply = ({
+  context,
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) => tool({ /* ... */ });
+```
+
+### Factory Pattern
+
+Tools and agents use factories to inject dependencies:
+
+```typescript
+// Tool factory
+export const createChatTools = (
+  context: SlackMessageContext,
+  stream: Stream
+) => ({
+  reply: reply({ context, stream }),
+  react: react({ context, stream }),
+  searchWeb: searchWeb({ stream }),
+});
+```
+
+### Structured Logging
+
+All logs include structured context:
+
+```typescript
+logger.info(
+  { channel: channelId, userId, type: 'reply' },
+  'Sent message'
+);
+```
+
+### Type Safety
+
+Strict TypeScript configuration with runtime validation:
+
+- Compile-time type checking
+- Runtime schema validation (Zod)
+- Type-safe database queries (Drizzle)
+
+## Configuration Files
+
+### Root Level
+
+- **package.json** - Dependencies and scripts
+- **tsconfig.json** - TypeScript configuration
+- **biome.jsonc** - Biome formatter/linter config
+- **drizzle.config.ts** - Drizzle ORM configuration
+- **lefthook.yml** - Git hooks configuration
+- **.env.example** - Example environment variables
+
+### Development
+
+- **.editorconfig** - Editor configuration
+- **.cspell.jsonc** - Spell checker configuration
+- **commitlint.config.ts** - Commit message linting
+
+## Understanding the Flow
+
+### Message Processing Flow
+
+1. **Slack event received** → `server/slack/events/message-create/`
+2. **Event validated** → Check permissions, triggers
+3. **Context created** → `SlackMessageContext` with event data
+4. **AI orchestrator called** → `server/lib/ai/agents/orchestrator.ts`
+5. **Tools registered** → Context-aware tools created
+6. **AI generates response** → Uses tools to interact with Slack
+7. **Stream updates** → Real-time status updates to user
+8. **Response complete** → Final message sent to Slack
+
+### Tool Execution Flow
+
+1. **AI decides to use tool** → Based on user message and available tools
+2. **Input validated** → Zod schema validation
+3. **Task created** → Status tracking started
+4. **Tool executes** → Performs operation (API call, database query, etc.)
+5. **Task updated** → Progress and results tracked
+6. **Result returned** → Structured response to AI
+7. **AI continues** → Uses result to formulate next action
+
+## Next Steps
+
+- Learn how to [add new AI tools](/development/adding-tools)
+- Review [code style guidelines](/development/code-style)
+- Set up your [development environment](/development/getting-started)

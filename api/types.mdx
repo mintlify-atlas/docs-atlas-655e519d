@@ -1,0 +1,365 @@
+---
+title: TypeScript Types
+description: Core type definitions for Gorkie Slack bot
+---
+
+This page documents the core TypeScript types used throughout Gorkie.
+
+## Slack Types
+
+### SlackMessageContext
+
+The main context object passed to tools and handlers. Contains the Slack client, event data, and bot metadata.
+
+<ResponseField name="client" type="WebClient" required>
+  Slack Web API client instance for making API calls
+</ResponseField>
+
+<ResponseField name="event" type="SlackMessageEvent" required>
+  The Slack message event that triggered this interaction
+</ResponseField>
+
+<ResponseField name="botUserId" type="string">
+  The bot's user ID in the workspace
+</ResponseField>
+
+<ResponseField name="teamId" type="string">
+  The Slack team/workspace ID
+</ResponseField>
+
+```typescript
+import type { SlackEventMiddlewareArgs } from '@slack/bolt';
+import type { WebClient } from '@slack/web-api';
+import type { SlackFile } from '~/types/slack/file';
+
+export interface SlackMessageContext {
+  botUserId?: string;
+  client: WebClient;
+  event: SlackMessageEvent;
+  teamId?: string;
+}
+```
+
+### SlackMessageEvent
+
+Represents a Slack message event with all relevant metadata.
+
+<ResponseField name="channel" type="string" required>
+  Channel ID where the message was sent
+</ResponseField>
+
+<ResponseField name="ts" type="string" required>
+  Message timestamp (unique identifier)
+</ResponseField>
+
+<ResponseField name="event_ts" type="string" required>
+  Event timestamp
+</ResponseField>
+
+<ResponseField name="text" type="string">
+  Message text content
+</ResponseField>
+
+<ResponseField name="user" type="string">
+  User ID who sent the message
+</ResponseField>
+
+<ResponseField name="thread_ts" type="string">
+  Thread timestamp if message is in a thread
+</ResponseField>
+
+<ResponseField name="files" type="SlackFile[]">
+  Array of uploaded files attached to the message
+</ResponseField>
+
+<ResponseField name="bot_id" type="string">
+  Bot ID if message was sent by a bot
+</ResponseField>
+
+<ResponseField name="subtype" type="string">
+  Message subtype (e.g., 'bot_message', 'file_share')
+</ResponseField>
+
+<ResponseField name="channel_type" type="string">
+  Type of channel ('channel', 'im', 'group')
+</ResponseField>
+
+```typescript
+export interface SlackMessageEvent {
+  assistant_thread?: { action_token?: string };
+  bot_id?: string;
+  channel: string;
+  channel_type?: string;
+  event_ts: string;
+  files?: SlackFile[];
+  subtype?: string;
+  text?: string;
+  thread_ts?: string;
+  ts: string;
+  user?: string;
+}
+```
+
+### SlackApp
+
+The Slack app configuration object.
+
+<ResponseField name="app" type="App" required>
+  Slack Bolt App instance
+</ResponseField>
+
+<ResponseField name="socketMode" type="boolean" required>
+  Whether the app is running in Socket Mode
+</ResponseField>
+
+<ResponseField name="receiver" type="ExpressReceiver">
+  Express receiver for HTTP mode (undefined in Socket Mode)
+</ResponseField>
+
+```typescript
+import type { App, ExpressReceiver } from '@slack/bolt';
+
+export interface SlackApp {
+  app: App;
+  receiver?: ExpressReceiver;
+  socketMode: boolean;
+}
+```
+
+## Database Types
+
+### SandboxSession
+
+Represents a persistent sandbox session tied to a Slack thread.
+
+<ResponseField name="threadId" type="string" required>
+  Slack thread ID (primary key)
+</ResponseField>
+
+<ResponseField name="sandboxId" type="string" required>
+  E2B sandbox instance ID
+</ResponseField>
+
+<ResponseField name="sessionId" type="string" required>
+  Session identifier
+</ResponseField>
+
+<ResponseField name="status" type="string" required>
+  Current status: 'creating', 'active', 'paused', 'destroyed'
+</ResponseField>
+
+<ResponseField name="pausedAt" type="Date">
+  Timestamp when sandbox was paused
+</ResponseField>
+
+<ResponseField name="resumedAt" type="Date">
+  Timestamp when sandbox was resumed
+</ResponseField>
+
+<ResponseField name="destroyedAt" type="Date">
+  Timestamp when sandbox was destroyed
+</ResponseField>
+
+<ResponseField name="createdAt" type="Date" required>
+  Creation timestamp
+</ResponseField>
+
+<ResponseField name="updatedAt" type="Date" required>
+  Last update timestamp
+</ResponseField>
+
+```typescript
+export type SandboxSession = typeof sandboxSessions.$inferSelect;
+export type NewSandboxSession = typeof sandboxSessions.$inferInsert;
+```
+
+### ScheduledTask
+
+Represents a recurring cron-scheduled task.
+
+<ResponseField name="id" type="string" required>
+  Task ID (primary key)
+</ResponseField>
+
+<ResponseField name="creatorUserId" type="string" required>
+  User ID who created the task
+</ResponseField>
+
+<ResponseField name="destinationType" type="string" required>
+  Destination type: 'channel' or 'dm'
+</ResponseField>
+
+<ResponseField name="destinationId" type="string" required>
+  Channel or user ID where results are sent
+</ResponseField>
+
+<ResponseField name="threadTs" type="string">
+  Thread timestamp if task posts to a thread
+</ResponseField>
+
+<ResponseField name="prompt" type="string" required>
+  Task prompt/instructions
+</ResponseField>
+
+<ResponseField name="cronExpression" type="string" required>
+  Cron expression for scheduling
+</ResponseField>
+
+<ResponseField name="timezone" type="string" required>
+  IANA timezone for cron scheduling
+</ResponseField>
+
+<ResponseField name="enabled" type="boolean" required>
+  Whether task is enabled (default: true)
+</ResponseField>
+
+<ResponseField name="nextRunAt" type="Date" required>
+  Next scheduled run time
+</ResponseField>
+
+<ResponseField name="runningAt" type="Date">
+  Timestamp when task started running (null if not running)
+</ResponseField>
+
+<ResponseField name="lastRunAt" type="Date">
+  Timestamp of last execution
+</ResponseField>
+
+<ResponseField name="lastStatus" type="string">
+  Status of last execution: 'success' or 'error'
+</ResponseField>
+
+<ResponseField name="lastError" type="string">
+  Error message from last execution if failed
+</ResponseField>
+
+```typescript
+export type ScheduledTask = typeof scheduledTasks.$inferSelect;
+export type NewScheduledTask = typeof scheduledTasks.$inferInsert;
+```
+
+## AI Tool Types
+
+### Tool Input Types
+
+Types for creating and updating streaming task updates.
+
+```typescript
+export interface CreateTaskInput {
+  taskId: string;
+  title: string;
+  details?: string;
+  status?: 'pending' | 'in_progress';
+}
+
+export interface UpdateTaskInput {
+  taskId: string;
+  status: 'in_progress' | 'complete' | 'error' | 'pending';
+  title?: string;
+  details?: string;
+  output?: string;
+  sources?: TaskSource[];
+}
+
+export interface FinishTaskInput {
+  taskId: string;
+  status: 'complete' | 'error';
+  output?: string;
+  sources?: TaskSource[];
+}
+```
+
+### Sandbox Tool Types
+
+Types for sandbox tool execution tracking.
+
+```typescript
+export interface ToolStartInput {
+  toolName: string;
+  args: unknown;
+  status?: string;
+}
+
+export interface ToolEndInput {
+  toolName: string;
+  result: unknown;
+  isError: boolean;
+}
+```
+
+## Stream Types
+
+### Stream
+
+Manages streaming updates to Slack messages.
+
+<ResponseField name="client" type="WebClient" required>
+  Slack Web API client
+</ResponseField>
+
+<ResponseField name="channel" type="string" required>
+  Channel ID where message is being streamed
+</ResponseField>
+
+<ResponseField name="ts" type="string" required>
+  Message timestamp being updated
+</ResponseField>
+
+<ResponseField name="tasks" type="Map<string, StreamTask>" required>
+  Map of task IDs to their current state
+</ResponseField>
+
+<ResponseField name="thought" type="boolean" required>
+  Whether thinking/processing indicator is shown
+</ResponseField>
+
+<ResponseField name="noop" type="boolean">
+  If true, stream operations are no-ops (for testing)
+</ResponseField>
+
+```typescript
+export interface Stream {
+  channel: string;
+  client: WebClient;
+  noop?: true;
+  tasks: Map<string, StreamTask>;
+  thought: boolean;
+  ts: string;
+}
+
+export interface StreamTask {
+  title?: string;
+  details?: string;
+  output?: string;
+  sources?: TaskSource[];
+  status: 'in_progress' | 'complete' | 'error' | 'pending';
+}
+
+export interface TaskSource {
+  type: 'url';
+  url: string;
+  text: string;
+}
+```
+
+## Request Types
+
+### Request Hints
+
+Context information passed to AI prompts.
+
+```typescript
+interface BaseHints {
+  channel: string;
+  server: string;
+  time: string;
+}
+
+export interface ChatRequestHints extends BaseHints {
+  activity: string;
+  joined: number;
+  status: string;
+}
+
+export interface SandboxRequestHints extends BaseHints {}
+```

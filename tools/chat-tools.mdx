@@ -1,0 +1,542 @@
+---
+title: Chat Tools
+description: Complete reference for Gorkie's chat interaction tools
+---
+
+Chat tools enable Gorkie to interact with Slack, search for information, generate content, and manage tasks during conversations. All chat tools provide real-time status updates and structured return values.
+
+## Communication Tools
+
+### reply
+
+Send messages to Slack channels or threads.
+
+<ParamField path="offset" type="number" default={0}>
+  Number of messages to go back from the triggering message. `0` means reply to the current message. Use with caution in threads.
+</ParamField>
+
+<ParamField path="content" type="string[]" required>
+  Array of text lines to send. Maximum 4 lines. Each line is sent as a separate message.
+</ParamField>
+
+<ParamField path="type" type="'reply' | 'message'" default="reply">
+  - `reply`: Send in a thread (creates thread if needed)
+  - `message`: Post directly in the channel
+</ParamField>
+
+**Returns:**
+```typescript
+{ success: true, content: "Sent reply to Slack channel" }
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+// Reply in thread
+{ offset: 0, content: ["Here's the answer.", "Let me know if you need more details."], type: "reply" }
+
+// Post to main channel
+{ offset: 0, content: ["Update: Task completed successfully."], type: "message" }
+```
+
+---
+
+### react
+
+Add emoji reactions to the current Slack message.
+
+<ParamField path="emojis" type="string[]" required>
+  Array of emoji names (without colons). Supports Unicode and custom Slack emojis.
+</ParamField>
+
+**Returns:**
+```typescript
+{ success: true, content: "Added reactions: thumbsup, rocket" }
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{ emojis: ["thumbsup", "rocket", "tada"] }
+```
+
+---
+
+## Information Retrieval
+
+### searchWeb
+
+Search the web using Exa for current information, documentation, news, and articles.
+
+<ParamField path="query" type="string" required>
+  The web search query. Be specific and clear (1-500 characters).
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  results: Array<{
+    url: string;
+    title: string;
+    text?: string;
+    // ... Exa search result fields
+  }>;
+}
+```
+
+**Example usage:**
+```typescript
+{ query: "latest TypeScript 5.4 features" }
+{ query: "Vercel AI SDK tool calling examples" }
+```
+
+---
+
+### searchSlack
+
+Search the Slack workspace for messages and content. Requires the user to explicitly mention Gorkie in their message.
+
+<ParamField path="query" type="string" required>
+  Search query for the Slack workspace.
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  success?: false;
+  error?: string;
+  messages?: Array<SlackSearchMessage>;
+}
+```
+
+**Example usage:**
+```typescript
+{ query: "project roadmap" }
+{ query: "deployment issues from:@user" }
+```
+
+<Warning>
+This tool only works if the user explicitly mentions Gorkie (e.g., `@gorkie search for X`). It will fail with an error if called without a mention.
+</Warning>
+
+---
+
+### getUserInfo
+
+Get detailed information about a Slack user by their user ID.
+
+<ParamField path="userId" type="string" required>
+  Slack user ID (e.g., `U123ABC456`). Must be a valid Slack user ID, not a display name.
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  success: true;
+  data: {
+    id: string;
+    username: string;
+    displayName?: string;
+    realName?: string;
+    statusText?: string;
+    statusEmoji?: string;
+    isBot?: boolean;
+    tz?: string;
+    updated?: number;
+    title?: string;
+    teamId?: string;
+    idResolved: string | null;
+  };
+}
+// or
+{ success: false, error: "User not found. Use their Slack ID." }
+```
+
+**Example usage:**
+```typescript
+{ userId: "U12345678" }
+```
+
+---
+
+### readConversationHistory
+
+Read message history from a public Slack channel or thread.
+
+<ParamField path="channelId" type="string" default="current channel">
+  Target Slack channel ID.
+</ParamField>
+
+<ParamField path="threadTs" type="string">
+  Optional thread timestamp. If provided, reads messages from that specific thread.
+</ParamField>
+
+<ParamField path="limit" type="number" default={40}>
+  Maximum number of messages to return (1-200).
+</ParamField>
+
+<ParamField path="latest" type="string">
+  Optional upper timestamp bound for returned messages.
+</ParamField>
+
+<ParamField path="oldest" type="string">
+  Optional lower timestamp bound for returned messages.
+</ParamField>
+
+<ParamField path="inclusive" type="boolean" default={false}>
+  When true, include messages exactly at latest/oldest boundaries.
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  success: true;
+  channelId: string;
+  threadTs: string | null;
+  messageCount: number;
+  messages: Array<SlackMessage>;
+}
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{ channelId: "C12345678", limit: 50 }
+{ channelId: "C12345678", threadTs: "1234567890.123456", limit: 100 }
+```
+
+<Warning>
+This tool only works with **public channels**. Reading private channels, DMs, or group DMs is not allowed.
+</Warning>
+
+---
+
+### summariseThread
+
+Generate a summary of a Slack thread using AI.
+
+<ParamField path="instructions" type="string">
+  Optional instructions to provide to the summarizer agent (e.g., "focus on action items" or "extract key decisions").
+</ParamField>
+
+<ParamField path="channelId" type="string" default="current channel">
+  Channel ID containing the thread to summarize.
+</ParamField>
+
+<ParamField path="threadTs" type="string" required>
+  Timestamp of the thread to summarize. Defaults to current thread if already in one.
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  success: true;
+  summary: string;
+  messageCount: number;
+}
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{ channelId: "C12345678", threadTs: "1234567890.123456" }
+{ instructions: "Extract action items and owners", threadTs: "1234567890.123456" }
+```
+
+---
+
+## Content Generation
+
+### generateImage
+
+Generate AI images from text prompts or transform uploaded images.
+
+<ParamField path="prompt" type="string" required>
+  Image generation prompt with visual details (1-1500 characters).
+</ParamField>
+
+<ParamField path="n" type="number" default={1}>
+  Number of images to generate (1-4).
+</ParamField>
+
+<ParamField path="size" type="string">
+  Optional image size in `{width}x{height}` format (e.g., `1024x1024`). Cannot be used with `aspectRatio`.
+</ParamField>
+
+<ParamField path="aspectRatio" type="string">
+  Optional aspect ratio in `{width}:{height}` format (e.g., `16:9`). Cannot be used with `size`.
+</ParamField>
+
+<ParamField path="seed" type="number">
+  Optional seed for reproducible generations.
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  success: true;
+  content: "Generated 2 image(s)" | "Generated 1 image(s) from attachment(s)";
+}
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{ prompt: "A serene mountain landscape at sunset", n: 1, aspectRatio: "16:9" }
+{ prompt: "Convert this to pixel art style", n: 2 } // with image attachment
+```
+
+---
+
+### mermaid
+
+Generate Mermaid diagrams and upload them as images to Slack.
+
+<ParamField path="code" type="string" required>
+  Valid Mermaid diagram code (flowchart, sequence diagram, class diagram, etc.).
+</ParamField>
+
+<ParamField path="title" type="string">
+  Optional title/alt text for the diagram.
+</ParamField>
+
+**Returns:**
+```typescript
+{ success: true, content: "Mermaid diagram uploaded to Slack and sent" }
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{
+  code: `flowchart TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Action 1]
+    B -->|No| D[Action 2]`,
+  title: "Approval Workflow"
+}
+```
+
+---
+
+## Task Management
+
+### scheduleReminder
+
+Schedule a one-time reminder to be sent to the user via DM.
+
+<ParamField path="text" type="string" required>
+  The reminder message text that will be sent to the user.
+</ParamField>
+
+<ParamField path="seconds" type="number" required>
+  Number of seconds to wait before sending (max 120 days = 10,368,000 seconds).
+</ParamField>
+
+**Returns:**
+```typescript
+{ success: true, content: "Scheduled reminder for U12345678 successfully" }
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{ text: "Hi! Remember to submit your timesheet.", seconds: 3600 } // 1 hour
+{ text: "Meeting in 15 minutes", seconds: 900 }
+```
+
+---
+
+### scheduleTask
+
+Create a recurring cron-based task that executes on a schedule.
+
+<ParamField path="task" type="string" required>
+  Task instructions to run on each execution (1-2000 characters).
+</ParamField>
+
+<ParamField path="cronExpression" type="string" required>
+  Cron expression (5 or 6 fields, e.g., `0 9 * * 1-5` for weekdays at 9 AM).
+</ParamField>
+
+<ParamField path="timezone" type="string" required>
+  IANA timezone name (e.g., `America/Los_Angeles`, `Europe/London`).
+</ParamField>
+
+<ParamField path="destinationType" type="'dm' | 'channel'" default="dm">
+  Where results should be delivered:
+  - `dm`: Send to the user's DM
+  - `channel`: Send to a specific channel
+</ParamField>
+
+<ParamField path="channelId" type="string">
+  Required if `destinationType` is `channel`. Defaults to current channel if omitted.
+</ParamField>
+
+<ParamField path="threadTs" type="string">
+  Optional thread timestamp for channel destinations. Results will post into this thread.
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  success: true;
+  taskId: string;
+  content: "Scheduled recurring task to your DM. Next run: 2026-03-02T09:00:00.000Z (America/Los_Angeles).";
+}
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{
+  task: "Check the team calendar and send a summary of upcoming meetings",
+  cronExpression: "0 9 * * 1-5",
+  timezone: "America/New_York",
+  destinationType: "channel",
+  channelId: "C12345678"
+}
+```
+
+<Info>
+**Limits:**
+- Maximum 20 active scheduled tasks per user
+- Minimum interval: 30 minutes between executions
+</Info>
+
+---
+
+### listScheduledTasks
+
+List your scheduled recurring tasks.
+
+<ParamField path="includeDisabled" type="boolean" default={false}>
+  Include disabled/cancelled tasks in the results.
+</ParamField>
+
+<ParamField path="limit" type="number" default={20}>
+  Maximum number of tasks to return (1-50).
+</ParamField>
+
+**Returns:**
+```typescript
+{
+  success: true;
+  tasks: Array<{
+    id: string;
+    enabled: boolean;
+    cronExpression: string;
+    timezone: string;
+    nextRunAt: string; // ISO timestamp
+    destinationType: "dm" | "channel";
+    destinationId: string;
+    threadTs: string | null;
+    lastStatus: string;
+    lastError: string | null;
+    promptPreview: string; // First 140 chars
+  }>;
+}
+```
+
+**Example usage:**
+```typescript
+{ limit: 10 }
+{ includeDisabled: true, limit: 50 }
+```
+
+---
+
+### cancelScheduledTask
+
+Cancel (disable) a scheduled recurring task.
+
+<ParamField path="taskId" type="string" required>
+  The scheduled task ID to cancel.
+</ParamField>
+
+**Returns:**
+```typescript
+{ success: true, content: "Cancelled scheduled task abc-123." }
+// or
+{ success: false, error: "No scheduled task found with ID abc-123." }
+```
+
+**Example usage:**
+```typescript
+{ taskId: "550e8400-e29b-41d4-a716-446655440000" }
+```
+
+---
+
+## Utilities
+
+### leaveChannel
+
+Leave the current Slack channel. Use carefully and only when explicitly requested by the user.
+
+<ParamField path="reason" type="string">
+  Optional short reason for leaving the channel.
+</ParamField>
+
+**Returns:**
+```typescript
+{ success: true }
+// or
+{ success: false, error: "Error message" }
+```
+
+**Example usage:**
+```typescript
+{ reason: "As requested by user" }
+```
+
+---
+
+### skip
+
+End the interaction without replying to the message. Used when no response is appropriate.
+
+<ParamField path="reason" type="string">
+  Optional short reason for skipping the reply.
+</ParamField>
+
+**Returns:**
+```typescript
+{ success: true }
+```
+
+**Example usage:**
+```typescript
+{ reason: "Message is not intended for bot" }
+```
+
+---
+
+## Code Execution
+
+For code execution and file processing capabilities, see the **[Sandbox Tools](/tools/sandbox-tools)** documentation.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Sandbox Tools" icon="terminal" href="/tools/sandbox-tools">
+    Deep dive into code execution and skills
+  </Card>
+  <Card title="Task Tools" icon="clock" href="/tools/task-tools">
+    Tools for scheduled task execution
+  </Card>
+  <Card title="Scheduled Tasks Feature" icon="calendar" href="/features/scheduled-tasks">
+    Learn about recurring automations
+  </Card>
+  <Card title="Add Custom Tools" icon="plus" href="/development/adding-tools">
+    Extend Gorkie with new tools
+  </Card>
+</CardGroup>

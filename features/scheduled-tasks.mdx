@@ -1,0 +1,345 @@
+---
+title: Scheduled Tasks
+description: Create recurring tasks and one-time reminders with cron scheduling
+---
+
+## Overview
+
+Gorkie can schedule recurring tasks and one-time reminders. Recurring tasks use cron expressions and run automatically on a schedule, while reminders are one-time messages sent after a delay.
+
+## Recurring Tasks
+
+Recurring tasks are cron-scheduled automations that run repeatedly and send output to a DM or channel.
+
+### Creating a Task
+
+From `server/lib/ai/tools/chat/schedule-task.ts:24-61`:
+
+```typescript
+export const scheduleTask = ({
+  context,
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'Create a recurring cron-scheduled task. Use this for repeated automations that should run on a schedule and send output to a DM or channel.',
+    inputSchema: z.object({
+      task: z
+        .string()
+        .min(1)
+        .max(2000)
+        .describe('Task instructions to run on each schedule execution.'),
+      cronExpression: z
+        .string()
+        .min(1)
+        .max(120)
+        .describe(
+          'Cron expression for the schedule (5 or 6 fields, e.g. "0 9 * * 1-5").'
+        ),
+      timezone: z
+        .string()
+        .min(1)
+        .max(120)
+        .describe('IANA timezone name (for example, "America/Los_Angeles").'),
+      destinationType: z
+        .enum(['dm', 'channel'])
+        .default('dm')
+        .describe('Where run results should be delivered.'),
+      channelId: z
+        .string()
+        .optional()
+        .describe(
+          'Required only for destinationType "channel". If omitted, current channel is used.'
+        ),
+      threadTs: z
+        .string()
+        .optional()
+        .describe(
+          'Optional thread timestamp for channel destination; outputs will post into this thread.'
+        ),
+    }),
+    // ... execution logic
+  });
+```
+
+### Task Parameters
+
+**Required:**
+- `task` - Instructions for what to do (max 2000 characters)
+- `cronExpression` - When to run (e.g., `"0 9 * * 1-5"` for weekdays at 9 AM)
+- `timezone` - IANA timezone (e.g., `"America/Los_Angeles"`)
+
+**Optional:**
+- `destinationType` - `"dm"` (default) or `"channel"`
+- `channelId` - Which channel (defaults to current)
+- `threadTs` - Thread timestamp to post in
+
+### Task Limits
+
+From `server/lib/ai/tools/chat/schedule-task.ts:14-15`:
+
+```typescript
+const MAX_ENABLED_TASKS_PER_USER = 20;
+const MIN_TASK_INTERVAL_MS = 30 * 60 * 1000;
+```
+
+**Limits:**
+- Maximum 20 enabled tasks per user
+- Minimum interval: 30 minutes between runs
+
+<Note>
+  Tasks must run at most once every 30 minutes. This prevents accidental spam and resource abuse.
+</Note>
+
+## Database Schema
+
+From `server/db/schema.ts:31-65`:
+
+```typescript
+export const scheduledTasks = pgTable(
+  'scheduled_tasks',
+  {
+    id: text('id').primaryKey(),
+    creatorUserId: text('creator_user_id').notNull(),
+    destinationType: text('destination_type').notNull(),
+    destinationId: text('destination_id').notNull(),
+    threadTs: text('thread_ts'),
+    prompt: text('prompt').notNull(),
+    cronExpression: text('cron_expression').notNull(),
+    timezone: text('timezone').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    nextRunAt: timestamp('next_run_at', { withTimezone: true }).notNull(),
+    runningAt: timestamp('running_at', { withTimezone: true }),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    lastStatus: text('last_status'),
+    lastError: text('last_error'),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index('scheduled_tasks_due_idx').on(table.enabled, table.nextRunAt),
+    index('scheduled_tasks_running_idx').on(table.runningAt),
+    index('scheduled_tasks_creator_idx').on(table.creatorUserId),
+  ]
+);
+```
+
+**Key fields:**
+- `id` - Unique task ID (UUID)
+- `creatorUserId` - Who created the task
+- `prompt` - Task instructions
+- `cronExpression` - Cron schedule
+- `timezone` - IANA timezone
+- `enabled` - Whether task is active
+- `nextRunAt` - When it will run next
+- `lastRunAt` - When it last ran
+- `lastStatus` - Result of last run
+- `lastError` - Error from last run (if any)
+
+## Managing Tasks
+
+### List Tasks
+
+From `server/lib/ai/tools/chat/list-scheduled-tasks.ts:14-29`:
+
+```typescript
+export const listScheduledTasks = ({
+  context,
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'List your scheduled recurring tasks so you can review or manage them.',
+    inputSchema: z.object({
+      includeDisabled: z
+        .boolean()
+        .default(false)
+        .describe('Include disabled/cancelled tasks in the results.'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .default(20)
+        .describe('Maximum number of tasks to return.'),
+    }),
+    // ... execution logic
+  });
+```
+
+**Usage:**
+```
+@gorkie list my scheduled tasks
+```
+
+### Cancel Tasks
+
+From `server/lib/ai/tools/chat/cancel-scheduled-task.ts:20-32`:
+
+```typescript
+export const cancelScheduledTask = ({
+  context,
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'Cancel (disable) one of your scheduled recurring tasks so it stops running.',
+    inputSchema: z.object({
+      taskId: z.string().min(1).describe('The scheduled task ID to cancel.'),
+    }),
+    // ... execution logic
+  });
+```
+
+**Usage:**
+```
+@gorkie cancel task abc-123-def-456
+```
+
+<Tip>
+  Cancelling a task disables it but doesn't delete it. You can see cancelled tasks by listing with `includeDisabled: true`.
+</Tip>
+
+## One-Time Reminders
+
+Reminders are simpler than recurring tasks - they send a single message after a delay.
+
+From `server/lib/ai/tools/chat/schedule-reminder.ts:17-35`:
+
+```typescript
+export const scheduleReminder = ({
+  context,
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'Schedule a reminder to be sent to the user who sent the last message in the conversation.',
+    inputSchema: z.object({
+      text: z
+        .string()
+        .describe(
+          "The text of the reminder message that will be sent to the user. For example, 'Hi there! 1 hour ago, you asked me to remind you to update your computer.'"
+        ),
+      seconds: z
+        .number()
+        .describe(
+          'The number of seconds to wait before sending the reminder from the current time.'
+        )
+        .max(
+          // 120 days
+          120 * 24 * 60 * 60
+        ),
+    }),
+    // ... execution logic
+  });
+```
+
+### Reminder Parameters
+
+- `text` - The reminder message
+- `seconds` - Delay in seconds (max 120 days)
+
+Reminders are sent via Slack's `chat.scheduleMessage` API:
+
+From `server/lib/ai/tools/chat/schedule-reminder.ts:67-71`:
+
+```typescript
+await context.client.chat.scheduleMessage({
+  channel: userId,
+  post_at: Math.floor(Date.now() / 1000) + seconds,
+  markdown_text: text,
+});
+```
+
+<Note>
+  Reminders are always sent as DMs to the user who requested them. They cannot be sent to channels.
+</Note>
+
+## Usage Examples
+
+### Daily Standup Reminder
+
+```
+@gorkie schedule a task that reminds the team to do standup
+Cron: 0 10 * * 1-5
+Timezone: America/New_York
+Destination: #engineering channel
+```
+
+This runs weekdays at 10 AM Eastern time.
+
+### Weekly Report
+
+```
+@gorkie create a weekly task to summarize GitHub activity
+Cron: 0 9 * * 1
+Timezone: UTC
+Destination: DM
+```
+
+This runs every Monday at 9 AM UTC and DMs you the results.
+
+### Reminder in 1 Hour
+
+```
+@gorkie remind me in 1 hour to check the deployment
+```
+
+Gorkie will send you a DM in 60 minutes.
+
+## Cron Expression Format
+
+Cron expressions use 5 or 6 fields:
+
+```
+┌───────────── minute (0-59)
+│ ┌───────────── hour (0-23)
+│ │ ┌───────────── day of month (1-31)
+│ │ │ ┌───────────── month (1-12)
+│ │ │ │ ┌───────────── day of week (0-6, Sunday=0)
+│ │ │ │ │
+* * * * *
+```
+
+### Common Examples
+
+- `0 9 * * 1-5` - Weekdays at 9 AM
+- `0 */6 * * *` - Every 6 hours
+- `0 0 1 * *` - First day of each month at midnight
+- `30 14 * * 1` - Every Monday at 2:30 PM
+- `0 8-17 * * 1-5` - Weekdays, every hour from 8 AM to 5 PM
+
+<Tip>
+  Use a cron expression generator like crontab.guru to build and test your expressions.
+</Tip>
+
+## Best Practices
+
+1. **Use timezones** - Always specify the correct timezone for your schedule
+2. **Test first** - Create a task with a short interval to test before setting the real schedule
+3. **Be specific** - Clear task instructions get better results
+4. **Monitor tasks** - List your tasks periodically to check status
+5. **Clean up** - Cancel tasks you no longer need
+
+## Related Features
+
+- [AI Chat](/features/ai-chat) - Gorkie's conversation capabilities
+- [Code Sandbox](/features/code-sandbox) - Tasks can use sandbox for complex operations
+- [Slack Integration](/features/slack-integration) - How tasks post results

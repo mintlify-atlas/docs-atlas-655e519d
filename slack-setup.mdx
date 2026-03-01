@@ -1,0 +1,375 @@
+---
+title: Slack App Configuration
+description: Detailed guide for setting up and configuring your Gorkie Slack app
+---
+
+# Slack App Setup
+
+This guide provides detailed information about configuring your Slack app for Gorkie, including OAuth scopes, event subscriptions, and connection modes.
+
+## Creating Your Slack App
+
+Gorkie includes a pre-configured app manifest (`slack-manifest.json`) that automatically sets up all required permissions and features.
+
+### Using the App Manifest
+
+<Steps>
+  <Step title="Open Slack API Dashboard">
+    Navigate to [https://api.slack.com/apps](https://api.slack.com/apps)
+  </Step>
+  
+  <Step title="Create New App">
+    Click **Create New App** and select **From an app manifest**
+  </Step>
+  
+  <Step title="Select Workspace">
+    Choose the workspace where you want to install Gorkie
+  </Step>
+  
+  <Step title="Paste Manifest">
+    Copy the entire contents of `slack-manifest.json` from the repository and paste it into the editor:
+    
+    ```json
+    {
+      "display_information": {
+        "name": "gorkie"
+      },
+      "features": {
+        "bot_user": {
+          "display_name": "gorkie",
+          "always_online": true
+        },
+        "assistant_view": {
+          "assistant_description": "I can help you!",
+          "suggested_prompts": [...]
+        }
+      },
+      ...
+    }
+    ```
+  </Step>
+  
+  <Step title="Review and Create">
+    Review the automatically configured features and click **Create**
+  </Step>
+</Steps>
+
+## OAuth Scopes Explained
+
+The manifest configures the following bot token scopes. Each scope grants specific permissions:
+
+### Core Chat Functionality
+
+- `chat:write` - Send messages as Gorkie
+- `app_mentions:read` - Receive notifications when Gorkie is @mentioned
+- `reactions:read` - View emoji reactions on messages
+- `reactions:write` - Add emoji reactions to messages
+
+### Channel Access
+
+- `channels:history` - View message history in public channels
+- `channels:join` - Join public channels automatically
+- `channels:manage` - Manage channel settings
+- `channels:read` - View information about public channels
+- `channels:write.invites` - Invite users to channels
+
+### Private Channel & Group Support
+
+- `groups:history` - View message history in private channels
+- `groups:read` - View information about private channels
+- `groups:write` - Manage private channel memberships
+
+### Direct Messages
+
+- `im:history` - View direct message history
+- `im:write` - Send direct messages
+
+### Group Direct Messages
+
+- `mpim:history` - View group DM history
+- `mpim:read` - View group DM information
+- `mpim:write` - Send messages in group DMs
+
+### Files and Attachments
+
+- `files:read` - Access files shared in conversations
+- `files:write` - Upload files to Slack (used for generated images and sandbox outputs)
+
+### User and Workspace Info
+
+- `users:read` - View user information
+- `users.profile:read` - View user profile details
+- `team:read` - View workspace information
+
+### Search Capabilities
+
+- `search:read.files` - Search for files
+- `search:read.public` - Search public channels and messages
+- `search:read.users` - Search for users
+
+### Assistant Features
+
+- `assistant:write` - Use Slack's Assistant API for suggested prompts and enhanced UX
+
+<Warning>
+  All these scopes are required for Gorkie to function properly. Removing any scope may break specific features.
+</Warning>
+
+## Event Subscriptions
+
+Gorkie listens to the following bot events to respond to user interactions:
+
+### Message Events
+
+- `message.channels` - Messages posted in public channels
+- `message.groups` - Messages posted in private channels
+- `message.im` - Direct messages to the bot
+- `message.mpim` - Messages in group DMs
+
+### Mention Events
+
+- `app_mention` - When Gorkie is @mentioned in any channel
+
+### Channel Events
+
+- `member_joined_channel` - When a user joins a channel
+- `member_left_channel` - When a user leaves a channel
+
+<Note>
+  Event subscriptions are automatically configured when using the manifest. These events enable Gorkie to respond to conversations across your workspace.
+</Note>
+
+## Connection Modes: Socket Mode vs HTTP
+
+Gorkie supports two connection modes for receiving events from Slack:
+
+### Socket Mode (Recommended for Development)
+
+Socket Mode uses WebSockets to receive events without exposing a public HTTP endpoint.
+
+**Advantages:**
+- No public URL required
+- Perfect for local development
+- Works behind firewalls and NAT
+- Easier to set up
+
+**Configuration:**
+
+<Steps>
+  <Step title="Enable Socket Mode">
+    In your Slack app settings, go to **Socket Mode** and toggle it on
+  </Step>
+  
+  <Step title="Generate App-Level Token">
+    Navigate to **Basic Information** > **App-Level Tokens** and click **Generate Token and Scopes**
+    
+    - Name: `gorkie-socket-token` (or any name)
+    - Scope: `connections:write`
+  </Step>
+  
+  <Step title="Configure Environment">
+    Add to your `.env` file:
+    
+    ```bash .env
+    SLACK_APP_TOKEN="xapp-1-..."
+    SLACK_SOCKET_MODE=true
+    ```
+  </Step>
+</Steps>
+
+### HTTP Mode (Recommended for Production)
+
+HTTP mode receives events via webhook POST requests to a public URL.
+
+**Advantages:**
+- More scalable for production
+- Better for serverless deployments
+- Lower latency
+
+**Configuration:**
+
+<Steps>
+  <Step title="Disable Socket Mode">
+    Set `SLACK_SOCKET_MODE=false` in your `.env` file
+  </Step>
+  
+  <Step title="Configure Event Subscriptions">
+    In your Slack app settings under **Event Subscriptions**:
+    
+    - Enable Events: **On**
+    - Request URL: `https://your-domain.com/slack/events`
+    - Slack will verify the URL with a challenge request
+  </Step>
+  
+  <Step title="Set Port">
+    Configure the HTTP port in `.env`:
+    
+    ```bash .env
+    SLACK_SOCKET_MODE=false
+    PORT=3000
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  When using HTTP mode, your server must be publicly accessible with a valid SSL certificate. Use a service like [ngrok](https://ngrok.com/) for local testing or deploy to a platform like Vercel or Railway.
+</Warning>
+
+## Bot Token Setup
+
+After creating your app, you need to generate and install the bot token:
+
+<Steps>
+  <Step title="Install App to Workspace">
+    Go to **OAuth & Permissions** in your Slack app settings and click **Install to Workspace**
+  </Step>
+  
+  <Step title="Authorize Permissions">
+    Review the permissions and click **Allow**
+  </Step>
+  
+  <Step title="Copy Bot Token">
+    Copy the **Bot User OAuth Token** (starts with `xoxb-`) from the OAuth & Permissions page
+  </Step>
+  
+  <Step title="Add to Environment">
+    Add the token to your `.env` file:
+    
+    ```bash .env
+    SLACK_BOT_TOKEN="xoxb-your-bot-token-here"
+    ```
+  </Step>
+</Steps>
+
+## Signing Secret
+
+The signing secret verifies that requests are coming from Slack:
+
+<Steps>
+  <Step title="Find Signing Secret">
+    Navigate to **Basic Information** in your Slack app settings
+  </Step>
+  
+  <Step title="Copy Secret">
+    Under **App Credentials**, copy the **Signing Secret**
+  </Step>
+  
+  <Step title="Add to Environment">
+    ```bash .env
+    SLACK_SIGNING_SECRET="your-signing-secret-here"
+    ```
+  </Step>
+</Steps>
+
+## Interactivity
+
+Interactivity is enabled in the manifest to support:
+
+- Button clicks
+- Select menus
+- Modal interactions
+- Message actions
+
+When using HTTP mode, configure the **Interactivity Request URL** to `https://your-domain.com/slack/events`.
+
+## Assistant View Configuration
+
+The manifest configures Slack's Assistant API with suggested prompts:
+
+```json
+"assistant_view": {
+  "assistant_description": "I can help you!",
+  "suggested_prompts": [
+    {
+      "title": "Help with Slack",
+      "message": "How do I block a user in Slack?"
+    },
+    {
+      "title": "Mathematics",
+      "message": "What is the Fundamental Theorem of Arithmetic?"
+    },
+    {
+      "title": "Philosophy",
+      "message": "Is AI sentient?"
+    },
+    {
+      "title": "Chatting",
+      "message": "Hi there gorkie!"
+    }
+  ]
+}
+```
+
+These prompts appear when users open a DM with Gorkie, making it easier to get started.
+
+## Testing Your Configuration
+
+After setting up your Slack app:
+
+1. **Start Gorkie** with `bun run dev`
+2. **Invite the bot** to a channel: `/invite @gorkie`
+3. **Send a test message**: `@gorkie Hello!`
+4. **Verify the response** appears in the thread
+
+Check the console logs for connection status and any errors.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Invalid token errors">
+    - Verify tokens don't have extra spaces or line breaks
+    - Ensure you're using the Bot User OAuth Token (starts with `xoxb-`), not the App-Level Token
+    - Check that the app is installed to the correct workspace
+  </Accordion>
+  
+  <Accordion title="Events not being received">
+    **For Socket Mode:**
+    - Verify `SLACK_APP_TOKEN` is set with `connections:write` scope
+    - Check Socket Mode is enabled in app settings
+    - Look for WebSocket connection logs in the console
+    
+    **For HTTP Mode:**
+    - Verify your URL is publicly accessible
+    - Check SSL certificate is valid
+    - Review Event Subscriptions URL verification status
+    - Ensure your server is running on the correct port
+  </Accordion>
+  
+  <Accordion title="Permission denied errors">
+    - Verify all required OAuth scopes are granted
+    - Reinstall the app to workspace to refresh permissions
+    - Check that the bot is a member of the channel (use `/invite @gorkie`)
+  </Accordion>
+  
+  <Accordion title="Signature verification failed">
+    - Verify `SLACK_SIGNING_SECRET` matches the value in Basic Information
+    - Check for extra whitespace in the environment variable
+    - Ensure requests are coming from Slack's IPs
+  </Accordion>
+</AccordionGroup>
+
+## Security Best Practices
+
+<Warning>
+  Never commit your `.env` file or expose your tokens publicly. All tokens should be treated as secrets.
+</Warning>
+
+- **Rotate tokens** periodically from the Slack app dashboard
+- **Use environment variables** for all sensitive configuration
+- **Enable token rotation** in your Slack app settings (optional)
+- **Restrict API access** to only the scopes you need
+- **Monitor logs** for unusual activity or unauthorized access attempts
+
+## Next Steps
+
+Now that your Slack app is configured:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Complete the full setup process
+  </Card>
+  
+  <Card title="Environment Variables" icon="key">
+    Configure AI providers, database, and additional services
+  </Card>
+</CardGroup>

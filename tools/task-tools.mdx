@@ -1,0 +1,324 @@
+---
+title: Task Tools
+description: Tools used by Gorkie during scheduled task execution
+---
+
+Task tools are specialized tools that run in the context of scheduled, recurring tasks. Unlike chat tools that respond to user messages in real-time, task tools execute autonomously on a cron schedule and deliver results to designated channels or DMs.
+
+## Overview
+
+When a [scheduled task](/features/scheduled-tasks) runs, Gorkie uses a different tool set optimized for asynchronous delivery. The primary task tool is `sendScheduledMessage`, which delivers the final output of a scheduled task execution.
+
+## How Task Execution Works
+
+1. **Trigger**: A scheduled task reaches its `nextRunAt` time
+2. **Execution**: Gorkie processes the task prompt (can use sandbox, web search, etc.)
+3. **Delivery**: The `sendScheduledMessage` tool sends results to the configured destination
+4. **Update**: Task state is updated with next run time and status
+
+The task execution environment has access to most chat tools (sandbox, searchWeb, etc.) but uses `sendScheduledMessage` instead of `reply` for final output.
+
+---
+
+## sendScheduledMessage
+
+Send the final output of a scheduled task to Slack. This should be the last tool call in a task execution.
+
+### Parameters
+
+<ParamField path="content" type="string" required>
+  Final user-facing message to send. This is the primary output of your scheduled task.
+</ParamField>
+
+### Context
+
+The tool receives context automatically from the task execution environment:
+
+```typescript
+{
+  client: WebClient;        // Slack API client
+  destination: {
+    channelId: string;       // Target channel or user DM
+    threadTs?: string | null; // Optional thread to post into
+    taskId: string;          // Scheduled task ID
+  };
+  stream: Stream;            // Task status stream
+}
+```
+
+### Returns
+
+```typescript
+{ success: true }
+// or
+{ success: false, error: "Error message" }
+```
+
+### Example Usage
+
+When a scheduled task executes, Gorkie might use tools like this:
+
+```typescript
+// 1. Use sandbox to generate report
+sandbox({
+  task: "Analyze logs from /var/log/app.log and create a summary report"
+});
+
+// 2. Search for relevant context
+searchWeb({
+  query: "common error patterns in Node.js applications"
+});
+
+// 3. Send final output
+sendScheduledMessage({
+  content: `**Daily Log Report**\n\nAnalyzed 1,247 log entries:\n- 3 critical errors\n- 12 warnings\n- Status: Mostly healthy\n\nFull report: /output/log-analysis.md`
+});
+```
+
+### Destination Types
+
+The `channelId` determines where the message is sent:
+
+- **DM**: If `channelId` is a user ID (starts with `U`), message goes to that user's DM
+- **Channel**: If `channelId` is a channel ID (starts with `C`), message goes to that channel
+- **Thread**: If `threadTs` is provided, message posts into that specific thread
+
+### Error Handling
+
+If `sendScheduledMessage` fails:
+
+1. The error is logged with task ID and destination details
+2. The scheduled task's `lastStatus` is set to `error`
+3. The `lastError` field stores the error message
+4. The task remains enabled and will retry at the next scheduled time
+
+You can view failed tasks using the [`listScheduledTasks`](/tools/chat-tools#listscheduledtasks) chat tool:
+
+```typescript
+listScheduledTasks({ includeDisabled: false, limit: 20 })
+```
+
+---
+
+## Task Tool Lifecycle
+
+Here's the complete lifecycle of a task tool execution:
+
+### 1. Task Trigger
+
+```typescript
+// Task definition
+{
+  id: "abc-123",
+  prompt: "Check GitHub issues and summarize",
+  cronExpression: "0 9 * * 1-5", // Weekdays at 9 AM
+  timezone: "America/Los_Angeles",
+  destinationType: "channel",
+  destinationId: "C12345678",
+  threadTs: null,
+  enabled: true,
+  nextRunAt: "2026-03-02T09:00:00.000Z"
+}
+```
+
+### 2. Execution Phase
+
+Gorkie executes the task prompt with access to:
+
+- **Sandbox**: For code execution and data processing
+- **Web search**: For real-time information
+- **Other chat tools**: Most tools except `reply`, `react`, `scheduleReminder`
+
+### 3. Delivery Phase
+
+```typescript
+// Final step: deliver results
+sendScheduledMessage({
+  content: "Found 5 new issues. 2 are high priority and need attention."
+});
+```
+
+### 4. Status Update
+
+After execution:
+
+```typescript
+{
+  lastRunAt: "2026-03-02T09:00:15.000Z",
+  lastStatus: "success",
+  lastError: null,
+  nextRunAt: "2026-03-03T09:00:00.000Z" // Next weekday
+}
+```
+
+---
+
+## Differences from Chat Tools
+
+| Feature | Chat Tools | Task Tools |
+|---------|------------|------------|
+| **Trigger** | User message | Cron schedule |
+| **Context** | SlackMessageContext | Task execution context |
+| **Output** | `reply` tool | `sendScheduledMessage` tool |
+| **Interactivity** | Real-time with user | Autonomous |
+| **Threading** | Can reply to specific messages | Posts to configured destination |
+| **Available tools** | All chat tools | Chat tools + `sendScheduledMessage` |
+
+---
+
+## Best Practices
+
+### 1. Clear Output Messages
+
+Make scheduled task output self-contained and actionable:
+
+```typescript
+// Good
+sendScheduledMessage({
+  content: `**Weekly Backup Report** (2026-03-02)\n\n✅ Database: 2.3 GB backed up\n✅ Files: 5.1 GB backed up\n⚠️ Warning: Backup time increased by 15%\n\nNext backup: 2026-03-09 at 2:00 AM`
+});
+
+// Avoid
+sendScheduledMessage({
+  content: "Done" // Not helpful!
+});
+```
+
+### 2. Handle Errors Gracefully
+
+Use try-catch patterns in your task prompt:
+
+```typescript
+prompt: `
+Try to fetch and summarize new GitHub issues.
+If the API fails, send a message saying "Could not connect to GitHub. Will retry at next scheduled time."
+Always call sendScheduledMessage at the end, even if there were errors.
+`
+```
+
+### 3. Use Sandbox for Heavy Processing
+
+Delegate complex work to the sandbox:
+
+```typescript
+prompt: `
+1. Use the sandbox tool to:
+   - Download sales data from API
+   - Process CSV and generate charts
+   - Create summary report
+2. Send the summary with sendScheduledMessage
+`
+```
+
+### 4. Provide Status Context
+
+Include timestamps and status indicators:
+
+```typescript
+sendScheduledMessage({
+  content: `🔄 **Deployment Status** (${new Date().toISOString()})\n\n✅ Staging: v2.3.1\n🚀 Production: v2.3.0\n📦 Ready to deploy: v2.3.1`
+});
+```
+
+---
+
+## Common Patterns
+
+### Daily Digest
+
+```typescript
+{
+  task: "Use searchWeb to find latest AI news. Summarize top 3 stories. Use sendScheduledMessage to deliver.",
+  cronExpression: "0 8 * * *",
+  timezone: "America/New_York",
+  destinationType: "dm"
+}
+```
+
+### Weekly Report
+
+```typescript
+{
+  task: "Use sandbox to analyze weekly metrics from /data/metrics.json. Generate charts. Send summary with sendScheduledMessage.",
+  cronExpression: "0 9 * * 1", // Mondays at 9 AM
+  timezone: "Europe/London",
+  destinationType: "channel",
+  channelId: "C12345678"
+}
+```
+
+### Hourly Monitor
+
+```typescript
+{
+  task: "Check API health at https://api.example.com/health. If status != 200, send alert with sendScheduledMessage.",
+  cronExpression: "0 * * * *", // Every hour
+  timezone: "UTC",
+  destinationType: "channel",
+  channelId: "C_ALERTS",
+  threadTs: "1234567890.123456" // Post to monitoring thread
+}
+```
+
+---
+
+## Debugging Failed Tasks
+
+If a scheduled task fails:
+
+1. **Check task status**:
+   ```typescript
+   @gorkie list my scheduled tasks
+   ```
+
+2. **Review the last error**:
+   ```typescript
+   // Response includes:
+   {
+     tasks: [{
+       id: "abc-123",
+       lastStatus: "error",
+       lastError: "Failed to deliver scheduled task output: channel_not_found",
+       // ...
+     }]
+   }
+   ```
+
+3. **Common issues**:
+   - **channel_not_found**: Bot not in the target channel
+   - **Timeout**: Task took too long (increase efficiency or split into multiple tasks)
+   - **Rate limit**: Too many API calls (add delays or reduce frequency)
+
+4. **Fix and re-enable**:
+   ```typescript
+   @gorkie cancel task abc-123
+   @gorkie create a new task [updated prompt]
+   ```
+
+---
+
+## Security Considerations
+
+- **Channel permissions**: Gorkie must be a member of the target channel
+- **User permissions**: Only task creators can cancel their own tasks
+- **Rate limiting**: Tasks are subject to Slack API rate limits
+- **Execution timeout**: Tasks that run too long will be aborted
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Scheduled Tasks Feature" icon="calendar-days" href="/features/scheduled-tasks">
+    Learn how to create and manage scheduled tasks
+  </Card>
+  <Card title="Chat Tools" icon="comments" href="/tools/chat-tools">
+    Explore tools available during task execution
+  </Card>
+  <Card title="Sandbox Tools" icon="terminal" href="/tools/sandbox-tools">
+    Use code execution in scheduled tasks
+  </Card>
+  <Card title="Cron Expressions" icon="clock" href="https://crontab.guru/" target="_blank">
+    Build and validate cron expressions
+  </Card>
+</CardGroup>

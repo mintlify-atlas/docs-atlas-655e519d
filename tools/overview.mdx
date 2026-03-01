@@ -1,0 +1,174 @@
+---
+title: AI Tools Overview
+description: Learn how Gorkie's AI tool system extends its capabilities through structured tool calls
+---
+
+Gorkie uses the Vercel AI SDK's tool system to extend its capabilities beyond simple chat responses. Tools enable Gorkie to interact with Slack, search the web, execute code, manage schedules, and perform complex multi-step operations.
+
+## How Tools Work
+
+When you interact with Gorkie, the AI model can decide to call one or more tools to fulfill your request. Each tool:
+
+- Has a clear **description** that helps the AI understand when to use it
+- Accepts **typed parameters** validated with Zod schemas
+- Returns **structured results** that the AI can reason about
+- Provides **real-time feedback** through task status updates
+
+Tools are composable—the AI can chain multiple tool calls together to accomplish complex workflows.
+
+## Tool Categories
+
+Gorkie's tools are organized into three main categories:
+
+### Chat Tools
+
+These tools handle real-time interactions in Slack conversations. They enable Gorkie to:
+
+- Send messages and reactions
+- Search the web and Slack workspace
+- Read conversation history
+- Generate images and diagrams
+- Schedule reminders and recurring tasks
+- Execute code in a sandboxed environment
+
+See [Chat Tools](/tools/chat-tools) for complete documentation.
+
+### Task Tools
+
+Task tools run in the context of scheduled, recurring tasks. They focus on:
+
+- Delivering scheduled task output to channels or DMs
+- Managing asynchronous workflows
+
+See [Task Tools](/tools/task-tools) for details.
+
+### Sandbox Tool
+
+The sandbox tool delegates work to a persistent code execution environment powered by E2B and the Pi coding agent. It provides:
+
+- File processing and data analysis
+- Package installation and code execution
+- Persistent state across conversation sessions
+- Access to specialized skills (browser automation, email, API integrations)
+
+See [Sandbox Tools](/tools/sandbox-tools) for an in-depth guide.
+
+## Available Tools
+
+Here's a complete list of tools available to Gorkie:
+
+### Communication
+
+<CardGroup cols={2}>
+  <Card title="reply" icon="comment" href="/tools/chat-tools#reply">
+    Send messages to Slack channels or threads
+  </Card>
+  <Card title="react" icon="face-smile" href="/tools/chat-tools#react">
+    Add emoji reactions to messages
+  </Card>
+</CardGroup>
+
+### Information Retrieval
+
+<CardGroup cols={2}>
+  <Card title="searchWeb" icon="magnifying-glass" href="/tools/chat-tools#searchweb">
+    Search the web for current information
+  </Card>
+  <Card title="searchSlack" icon="slack" href="/tools/chat-tools#searchslack">
+    Search the Slack workspace
+  </Card>
+  <Card title="getUserInfo" icon="user" href="/tools/chat-tools#getuserinfo">
+    Get Slack user details
+  </Card>
+  <Card title="readConversationHistory" icon="messages" href="/tools/chat-tools#readconversationhistory">
+    Read message history from channels or threads
+  </Card>
+</CardGroup>
+
+### Content Generation
+
+<CardGroup cols={2}>
+  <Card title="generateImage" icon="image" href="/tools/chat-tools#generateimage">
+    Generate AI images from prompts
+  </Card>
+  <Card title="mermaid" icon="diagram-project" href="/tools/chat-tools#mermaid">
+    Create Mermaid diagrams
+  </Card>
+  <Card title="summariseThread" icon="compress" href="/tools/chat-tools#summarisethread">
+    Summarize Slack threads
+  </Card>
+</CardGroup>
+
+### Task Management
+
+<CardGroup cols={2}>
+  <Card title="scheduleReminder" icon="bell" href="/tools/chat-tools#schedulereminder">
+    Schedule one-time reminders
+  </Card>
+  <Card title="scheduleTask" icon="calendar-days" href="/tools/chat-tools#scheduletask">
+    Create recurring cron-based tasks
+  </Card>
+  <Card title="listScheduledTasks" icon="list" href="/tools/chat-tools#listscheduledtasks">
+    List your scheduled tasks
+  </Card>
+  <Card title="cancelScheduledTask" icon="xmark" href="/tools/chat-tools#cancelscheduledtask">
+    Cancel recurring tasks
+  </Card>
+</CardGroup>
+
+### Code Execution
+
+<CardGroup cols={1}>
+  <Card title="sandbox" icon="code" href="/tools/sandbox-tools">
+    Execute code and process files in a persistent environment
+  </Card>
+</CardGroup>
+
+### Utilities
+
+<CardGroup cols={2}>
+  <Card title="leaveChannel" icon="right-from-bracket" href="/tools/chat-tools#leavechannel">
+    Leave the current Slack channel
+  </Card>
+  <Card title="skip" icon="forward" href="/tools/chat-tools#skip">
+    End without replying to a message
+  </Card>
+</CardGroup>
+
+## Tool Execution Flow
+
+When Gorkie calls a tool, you'll see real-time updates in Slack:
+
+1. **Pending**: Tool call initiated
+2. **In Progress**: Tool is executing with optional details
+3. **Complete**: Tool succeeded with output summary
+4. **Error**: Tool failed with error message
+
+For long-running operations like sandbox tasks, Gorkie provides detailed sub-task progress updates.
+
+## Best Practices
+
+When working with Gorkie's tools:
+
+- **Be specific**: Clear requests help Gorkie choose the right tools
+- **Provide context**: Reference files, channels, or time ranges when relevant
+- **Use threads**: Keep complex multi-tool workflows organized in threads
+- **Check permissions**: Some tools require explicit mentions (e.g., `searchSlack`)
+- **Monitor limits**: Rate limits and user quotas apply to some operations
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chat Tools Reference" icon="book" href="/tools/chat-tools">
+    Detailed documentation for all chat tools
+  </Card>
+  <Card title="Sandbox Deep Dive" icon="terminal" href="/tools/sandbox-tools">
+    Learn about code execution and skills
+  </Card>
+  <Card title="Scheduled Tasks" icon="clock" href="/features/scheduled-tasks">
+    Set up recurring automations
+  </Card>
+  <Card title="Add Custom Tools" icon="wrench" href="/development/adding-tools">
+    Extend Gorkie with your own tools
+  </Card>
+</CardGroup>

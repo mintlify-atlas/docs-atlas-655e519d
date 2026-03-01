@@ -1,0 +1,255 @@
+---
+title: AI Chat
+description: Gorkie's AI conversation capabilities powered by multiple model providers
+---
+
+## Overview
+
+Gorkie uses AI models to have natural conversations in Slack, responding to mentions, DMs, and thread replies. The bot leverages multiple model providers with automatic fallback for reliability.
+
+## How Gorkie Responds
+
+Gorkie monitors Slack for these interaction patterns:
+
+- **Direct mentions**: `@gorkie what's the weather?`
+- **Direct messages**: Private 1-on-1 conversations
+- **Thread replies**: Follow-up responses in threads where Gorkie is already participating
+
+### Message Context
+
+Gorkie receives messages in this format:
+
+```
+username (userID): message content
+```
+
+For example:
+```
+john_doe (U12345): Can you help me debug this code?
+```
+
+This format helps Gorkie understand who said what in the conversation history.
+
+## Model Providers
+
+Gorkie uses a resilient multi-provider setup with automatic failover to ensure high availability.
+
+### Provider Configuration
+
+From `server/lib/ai/providers.ts:7-14`:
+
+```typescript
+const hackclubBase = createOpenRouter({
+  apiKey: env.HACKCLUB_API_KEY,
+  baseURL: 'https://ai.hackclub.com/proxy/v1',
+});
+
+const openrouter = createOpenRouter({
+  apiKey: env.OPENROUTER_API_KEY,
+});
+```
+
+Gorkie uses two providers:
+
+1. **Hack Club** - Primary provider via Hack Club's AI proxy
+2. **OpenRouter** - Fallback provider for redundancy
+
+### Chat Model Cascade
+
+The chat model tries multiple models in sequence if one fails (`server/lib/ai/providers.ts:38-48`):
+
+```typescript
+const chatModel = createRetryable({
+  model: hackclub.languageModel('google/gemini-3-flash-preview'),
+  retries: [
+    hackclub.languageModel('google/gemini-2.5-flash'),
+    hackclub.languageModel('openai/gpt-5-mini'),
+    openrouter('google/gemini-3-flash-preview'),
+    openrouter('google/gemini-2.5-flash'),
+    openrouter('openai/gpt-5-mini'),
+  ],
+  onError: onModelError,
+});
+```
+
+**Fallback order:**
+1. google/gemini-3-flash-preview (Hack Club)
+2. google/gemini-2.5-flash (Hack Club)
+3. openai/gpt-5-mini (Hack Club)
+4. google/gemini-3-flash-preview (OpenRouter)
+5. google/gemini-2.5-flash (OpenRouter)
+6. openai/gpt-5-mini (OpenRouter)
+
+<Note>
+  The retry mechanism automatically switches providers if the Hack Club proxy is down, ensuring Gorkie stays responsive.
+</Note>
+
+## Conversation Context & History
+
+Gorkie maintains conversation context by fetching message history from Slack.
+
+### Fetching Messages
+
+From `server/slack/conversations.ts:34-67`:
+
+```typescript
+export async function fetchMessages(
+  options: ConversationOptions
+): Promise<SlackConversationMessage[]> {
+  const {
+    client,
+    channel,
+    threadTs,
+    limit = 40,
+    latest,
+    oldest,
+    inclusive = false,
+  } = options;
+
+  const response = threadTs
+    ? await client.conversations.replies({
+        channel,
+        ts: threadTs,
+        limit,
+        latest,
+        oldest,
+        inclusive,
+      })
+    : await client.conversations.history({
+        channel,
+        limit,
+        latest,
+        oldest,
+        inclusive,
+      });
+
+  return (response.messages as SlackConversationMessage[] | undefined) ?? [];
+}
+```
+
+**Context features:**
+- Fetches up to 40 messages by default
+- Supports thread-aware context (uses `conversations.replies` for threads)
+- Builds user cache to resolve display names
+- Filters messages by timestamp range
+
+### User Context
+
+Gorkie builds a user cache to display friendly names (`server/slack/conversations.ts:91-132`):
+
+```typescript
+async function buildUserCache(
+  client: ConversationOptions['client'],
+  messages: SlackConversationMessage[]
+): Promise<Map<string, CachedUser>> {
+  const userIds = new Set<string>();
+  for (const message of messages) {
+    if (message.user) {
+      userIds.add(message.user);
+    }
+  }
+
+  const userCache = new Map<string, CachedUser>();
+  await Promise.all(
+    Array.from(userIds).map(async (userId) => {
+      try {
+        const info = await client.users.info({ user: userId });
+        const displayName =
+          info.user?.profile?.display_name ||
+          info.user?.real_name ||
+          info.user?.name ||
+          userId;
+        userCache.set(userId, {
+          id: userId,
+          displayName,
+          realName: info.user?.real_name || undefined,
+          username: info.user?.name || undefined,
+        });
+      } catch (error) {
+        // Falls back to userId if lookup fails
+        userCache.set(userId, {
+          id: userId,
+          displayName: userId,
+        });
+      }
+    })
+  );
+
+  return userCache;
+}
+```
+
+## System Prompt
+
+Gorkie's personality and capabilities are defined in system prompts.
+
+### Core Identity
+
+From `server/lib/ai/prompts/chat/core.ts`:
+
+```
+You're Gorkie. Your display name on Slack is gorkie.
+
+Slack Basics:
+- Mention people with <@USER_ID> (IDs are available via getUserInfo).
+- Messages appear as `display-name (user-id): text` in the logs you see.
+- Respond in normal, standard Markdown.
+- If you won't respond, use the "skip" tool.
+
+Limitations:
+- You CANNOT log in to websites, authenticate, or access anything behind auth.
+- You CANNOT browse the web directly. Use the searchWeb tool instead.
+- If a user shares an API key/token immediately revoke it.
+```
+
+### Request Context
+
+Each request includes contextual information (`server/lib/ai/prompts/chat/index.ts:9-15`):
+
+```typescript
+const getRequestPrompt = (hints: ChatRequestHints) => `
+The current date and time is ${hints.time}.
+You're in the ${hints.server} Slack workspace, inside the ${hints.channel} channel.
+You joined the server on ${new Date(hints.joined).toLocaleDateString()}.
+Your current status is ${hints.status} and your activity is ${hints.activity}.
+`;
+```
+
+<Tip>
+  The system prompt instructs Gorkie to output clean Markdown without XML tags, prefixes like "AI:", or metadata. This keeps responses natural.
+</Tip>
+
+## Image Processing
+
+Gorkie can process images attached to Slack messages. Images are converted to base64 and included in the conversation context alongside text.
+
+From `server/slack/events/message-create/utils/respond.ts:45-57`:
+
+```typescript
+const imageContents = await processSlackFiles(files);
+
+const replyPrompt = `You are replying to the following message from ${authorName} (${userId}): ${messageText}`;
+
+let currentMessageContent: UserContent;
+if (imageContents.length > 0) {
+  currentMessageContent = [
+    { type: 'text' as const, text: replyPrompt },
+    ...imageContents,
+  ];
+} else {
+  currentMessageContent = replyPrompt;
+}
+```
+
+## Best Practices
+
+1. **Use threads** - Keep conversations organized by replying in threads
+2. **Be specific** - Clear questions get better responses
+3. **Provide context** - Gorkie remembers the conversation but appreciates clarity
+4. **Use tools** - Gorkie has many capabilities via tools (search, code execution, scheduling)
+
+## Related Features
+
+- [Web Search](/features/web-search) - Search the internet for information
+- [Code Sandbox](/features/code-sandbox) - Execute code and process files
+- [Scheduled Tasks](/features/scheduled-tasks) - Set up recurring reminders

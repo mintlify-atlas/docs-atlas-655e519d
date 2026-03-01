@@ -1,0 +1,249 @@
+---
+title: Web Search
+description: Exa-powered web search for current information and documentation
+---
+
+## Overview
+
+Gorkie can search the web using the Exa search engine to find current information, news, documentation, and articles. This capability allows Gorkie to answer questions about recent events, look up API documentation, and retrieve content from the internet.
+
+## How Web Search Works
+
+Gorkie automatically decides when to use web search based on the conversation context. You can also explicitly request a search.
+
+### Search Tool
+
+From `server/lib/ai/tools/chat/search-web.ts:16-42`:
+
+```typescript
+export const searchWeb = ({
+  stream,
+}: {
+  context: SlackMessageContext;
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'Search the web for code docs, current information, news, articles, and content. Use this when you need up-to-date information or facts from the internet.',
+    inputSchema: z.object({
+      query: z
+        .string()
+        .min(1)
+        .max(500)
+        .describe(
+          "The web search query. Be specific and clear about what you're looking for."
+        ),
+    }),
+    onInputStart: async ({ toolCallId }) => {
+      await createTask(stream, {
+        taskId: toolCallId,
+        title: 'Searching the web',
+        status: 'pending',
+      });
+    },
+    execute: async ({ query }, { toolCallId }) => {
+      // ... search execution
+    },
+  });
+```
+
+<Note>
+  Gorkie uses web search when you ask about current events, recent releases, documentation, or any information that requires up-to-date knowledge.
+</Note>
+
+## Search Configuration
+
+Gorkie uses Exa's "auto" search type, which automatically determines the best search strategy.
+
+From `server/lib/ai/tools/chat/search-web.ts:8-14`:
+
+```typescript
+const EXA_SEARCH_OPTIONS = {
+  type: 'auto',
+  numResults: 10,
+  contents: {
+    text: true,
+  },
+} as const satisfies RegularSearchOptions;
+```
+
+**Configuration:**
+- **Type**: `auto` - Exa decides between neural and keyword search
+- **Results**: 10 results per search
+- **Contents**: Text content included (for reading and summarization)
+
+## Exa Integration
+
+The Exa client is initialized with an API key.
+
+From `server/lib/ai/exa.ts:1-5`:
+
+```typescript
+import Exa from 'exa-js';
+import { env } from '~/env';
+
+export const exa = new Exa(env.EXA_API_KEY);
+```
+
+## Search Execution
+
+From `server/lib/ai/tools/chat/search-web.ts:49-72`:
+
+```typescript
+try {
+  const result = await exa.search(query, EXA_SEARCH_OPTIONS);
+  const sources: TaskSource[] = result.results
+    .map((item) => {
+      const url = item.url?.trim();
+      if (!url) {
+        return undefined;
+      }
+
+      return {
+        type: 'url',
+        text: item.title || url,
+        url,
+      };
+    })
+    .filter((source): source is TaskSource => Boolean(source))
+    .slice(0, 8);
+  await finishTask(stream, {
+    status: 'complete',
+    taskId: task,
+    sources,
+    output: `Searched the web for "${query}" and found *${sources.length} source${sources.length === 1 ? '' : 's'}*.`,
+  });
+  return result;
+}
+```
+
+**Search results include:**
+- URL of each result
+- Title of the page
+- Full text content (up to Exa's limits)
+- Up to 8 sources displayed in Slack
+
+## When Gorkie Uses Search
+
+Gorkie's system prompt includes guidance on search usage:
+
+```
+Limitations:
+- You CANNOT browse the web directly. Use the searchWeb tool to find information instead.
+- If a user asks to download/convert/extract content from a PUBLIC URL, use the sandbox tool.
+```
+
+Gorkie will search when:
+- You ask about current events or news
+- You need recent documentation or API references
+- You request information not in its training data
+- You explicitly ask it to search
+
+## Search Capabilities
+
+### Code Documentation
+
+```
+@gorkie search for React 19 migration guide
+```
+
+Gorkie will find official documentation and articles about React 19 migration.
+
+### Current Information
+
+```
+@gorkie what are the latest features in Python 3.13?
+```
+
+Gorkie will search for recent Python release notes and articles.
+
+### News and Articles
+
+```
+@gorkie find articles about WebAssembly performance
+```
+
+Gorkie will search for technical articles and benchmarks.
+
+### API References
+
+```
+@gorkie how does the Stripe Checkout API work?
+```
+
+Gorkie will find Stripe's API documentation and examples.
+
+## Search Results Display
+
+Search results appear in Slack as task completion messages with source links:
+
+```
+Searched the web for "React 19 migration guide" and found 8 sources.
+
+Sources:
+- React 19 Release Notes (https://react.dev/blog/2024/...)
+- Migration Guide (https://react.dev/blog/2024/...)
+- ...
+```
+
+The full content is available to Gorkie for answering your question.
+
+## Best Practices
+
+1. **Be specific** - "React 19 hooks changes" is better than "React updates"
+2. **Use keywords** - Include technical terms for better results
+3. **Combine with sandbox** - Search for docs, then use sandbox to try examples
+4. **Trust Gorkie** - It knows when search is needed and will use it automatically
+
+<Tip>
+  If Gorkie's search doesn't find what you need, try rephrasing your question with different keywords or being more specific about what you're looking for.
+</Tip>
+
+## Limitations
+
+### What Search CAN Do
+
+- Find public web content
+- Access documentation sites
+- Retrieve articles and blog posts
+- Get current information
+
+### What Search CANNOT Do
+
+- Access authenticated/private content
+- Log into websites
+- Access paywalled articles
+- Retrieve content behind login screens
+
+From the system prompt:
+
+```
+You CANNOT log in to websites, authenticate, or access anything behind auth
+(GitHub repos, Google Docs, Jira, private APIs, etc.).
+```
+
+If you need content from a private resource, paste it directly into Slack or describe what you need.
+
+## Error Handling
+
+If a search fails, Gorkie will:
+
+1. Mark the task as error
+2. Log the error details
+3. Inform you that the search failed
+4. Try to help using its existing knowledge
+
+From `server/lib/ai/tools/chat/search-web.ts:73-77`:
+
+```typescript
+catch (error) {
+  await finishTask(stream, { status: 'error', taskId: task });
+  throw error;
+}
+```
+
+## Related Features
+
+- [AI Chat](/features/ai-chat) - Gorkie's conversation capabilities
+- [Code Sandbox](/features/code-sandbox) - Execute code with search results
+- [Slack Integration](/features/slack-integration) - How results appear in Slack

@@ -1,0 +1,387 @@
+---
+title: 'Rate Limiting & Caching'
+description: 'Redis-based rate limiting and user permission caching'
+---
+
+## Overview
+
+Gorkie implements two levels of access control:
+1. **Permission Caching** - In-memory cache of allowed users
+2. **Rate Limiting** - Redis-based limits (planned, not yet implemented)
+
+## Redis Setup
+
+Redis client is initialized using Bun's built-in `RedisClient`:
+
+```typescript server/lib/kv.ts
+import { RedisClient } from 'bun';
+import { env } from '~/env';
+
+export const redis = new RedisClient(env.REDIS_URL);
+```
+
+**Environment Variable:**
+```bash
+REDIS_URL=redis://localhost:6379
+```
+
+<Info>
+Bun's `RedisClient` is a lightweight Redis client optimized for performance. For advanced features, consider using `ioredis`.
+</Info>
+
+## User Permission Caching
+
+Gorkie can be configured with an "opt-in" channel. Only users in that channel can interact with the bot.
+
+### Building the Cache
+
+The cache is built at application startup:
+
+```typescript server/lib/allowed-users.ts
+const allowedUsers = new Set<string>();
+
+export async function buildCache(app: App) {
+  if (!env.OPT_IN_CHANNEL) {
+    return; // No opt-in required
+  }
+
+  // Listen for channel joins
+  app.event('member_joined_channel', async ({ event }) => {
+    if (event.channel !== env.OPT_IN_CHANNEL) {
+      return;
+    }
+    logger.debug(`${event.user} joined opt-in channel`);
+    allowedUsers.add(event.user);
+  });
+
+  // Listen for channel leaves
+  app.event('member_left_channel', async ({ event }) => {
+    if (event.channel !== env.OPT_IN_CHANNEL) {
+      return;
+    }
+    logger.debug(`${event.user} left opt-in channel`);
+    allowedUsers.delete(event.user);
+  });
+
+  // Fetch all current members
+  let cursor: string | undefined;
+  logger.info('Building opt-in user cache');
+  
+  do {
+    const req = await app.client.conversations.members({
+      channel: env.OPT_IN_CHANNEL,
+      limit: 200,
+      cursor,
+    });
+    
+    if (!req.ok) {
+      throw new Error('Failed to build opt-in cache');
+    }
+    
+    cursor = req.response_metadata?.next_cursor;
+    
+    if (req.members) {
+      for (const member of req.members) {
+        allowedUsers.add(member);
+      }
+    }
+  } while (cursor);
+  
+  logger.info(`${allowedUsers.size} users added to opt-in cache`);
+}
+```
+
+### Checking Permissions
+
+```typescript server/lib/allowed-users.ts
+export function isUserAllowed(userId: string) {
+  if (!env.OPT_IN_CHANNEL) {
+    return true; // No restrictions
+  }
+  return allowedUsers.has(userId);
+}
+```
+
+**Usage in Event Handlers:**
+
+```typescript server/slack/events/message-create/index.ts
+if (trigger.type) {
+  if (!canUseBot(userId)) {
+    await messageContext.client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.thread_ts ?? event.ts,
+      markdown_text: `Hey there <@${userId}>! For security and privacy reasons, you must be in <#${env.OPT_IN_CHANNEL}> to talk to me.`,
+    });
+    return;
+  }
+  // ... process message
+}
+```
+
+<Info>
+The cache is updated in real-time as users join/leave the opt-in channel. No database queries are needed for permission checks.
+</Info>
+
+## Environment Variables
+
+### Required
+
+```bash
+REDIS_URL=redis://localhost:6379
+```
+
+### Optional
+
+```bash
+OPT_IN_CHANNEL=C12345678  # Channel ID for opt-in requirement
+```
+
+If `OPT_IN_CHANNEL` is not set, all users can interact with the bot.
+
+## Rate Limiting (Planned)
+
+While rate limiting infrastructure exists, it's not yet fully implemented. Here's the planned design:
+
+### User Rate Limits
+
+```typescript
+import { redis } from '~/lib/kv';
+
+export async function checkRateLimit(
+  userId: string,
+  action: string
+): Promise<{ allowed: boolean; remaining: number }> {
+  const key = `rate:${action}:${userId}`;
+  const limit = 10; // 10 requests
+  const window = 60; // per 60 seconds
+
+  const current = await redis.get(key);
+  const count = current ? parseInt(current) : 0;
+
+  if (count >= limit) {
+    return { allowed: false, remaining: 0 };
+  }
+
+  const multi = redis.multi();
+  multi.incr(key);
+  if (count === 0) {
+    multi.expire(key, window);
+  }
+  await multi.exec();
+
+  return { allowed: true, remaining: limit - count - 1 };
+}
+```
+
+### Suggested Limits
+
+| Action | Limit | Window |
+|--------|-------|--------|
+| `message` | 20 messages | 1 minute |
+| `sandbox` | 5 executions | 1 minute |
+| `searchWeb` | 10 searches | 1 minute |
+| `generateImage` | 5 images | 5 minutes |
+
+### Implementing Rate Limiting
+
+To enable rate limiting, add checks before executing actions:
+
+```typescript
+const { allowed, remaining } = await checkRateLimit(userId, 'sandbox');
+
+if (!allowed) {
+  await context.client.chat.postMessage({
+    channel: event.channel,
+    thread_ts: event.thread_ts ?? event.ts,
+    markdown_text: 'Rate limit exceeded. Please try again in a minute.',
+  });
+  return;
+}
+
+logger.debug({ userId, action: 'sandbox', remaining }, 'Rate limit check passed');
+```
+
+<Warning>
+Rate limiting is not currently enforced. Implement it before deploying to production to prevent abuse.
+</Warning>
+
+## Caching Patterns
+
+### In-Memory Cache (Set)
+
+For frequently checked data that changes rarely:
+
+```typescript
+const allowedUsers = new Set<string>();
+
+// O(1) lookups
+if (allowedUsers.has(userId)) {
+  // Allow access
+}
+```
+
+**Pros:**
+- Ultra-fast lookups
+- No network latency
+- Automatically updated via events
+
+**Cons:**
+- Not shared across instances (requires Redis for distributed cache)
+- Lost on restart (rebuilt from Slack API)
+
+### Redis Cache (Key-Value)
+
+For shared state across instances:
+
+```typescript
+// Set with expiration
+await redis.set(`cache:user:${userId}`, JSON.stringify(userData), 'EX', 3600);
+
+// Get
+const cached = await redis.get(`cache:user:${userId}`);
+if (cached) {
+  return JSON.parse(cached);
+}
+```
+
+**Pros:**
+- Shared across instances
+- Persistent (survives restarts)
+- TTL support
+
+**Cons:**
+- Network latency
+- Requires serialization
+
+## Best Practices
+
+### 1. Cache User Profiles
+
+Avoid repeated Slack API calls:
+
+```typescript
+const cacheKey = `user:${userId}`;
+const cached = await redis.get(cacheKey);
+
+if (cached) {
+  return JSON.parse(cached);
+}
+
+const profile = await client.users.info({ user: userId });
+await redis.set(cacheKey, JSON.stringify(profile), 'EX', 3600);
+return profile;
+```
+
+### 2. Implement Circuit Breaker
+
+Prevent cascading failures:
+
+```typescript
+let failures = 0;
+const threshold = 5;
+
+try {
+  const result = await externalApiCall();
+  failures = 0; // Reset on success
+  return result;
+} catch (error) {
+  failures++;
+  if (failures >= threshold) {
+    logger.error('Circuit breaker opened');
+    throw new Error('Service temporarily unavailable');
+  }
+  throw error;
+}
+```
+
+### 3. Use Cache-Aside Pattern
+
+```typescript
+async function getWithCache<T>(
+  key: string,
+  fetcher: () => Promise<T>,
+  ttl: number
+): Promise<T> {
+  // Try cache first
+  const cached = await redis.get(key);
+  if (cached) {
+    return JSON.parse(cached);
+  }
+
+  // Fetch from source
+  const data = await fetcher();
+
+  // Update cache
+  await redis.set(key, JSON.stringify(data), 'EX', ttl);
+
+  return data;
+}
+```
+
+### 4. Invalidate on Updates
+
+Clear cache when data changes:
+
+```typescript
+await updateUserProfile(userId, newData);
+await redis.del(`user:${userId}`); // Clear cache
+```
+
+## Monitoring
+
+### Log Rate Limit Events
+
+```typescript
+logger.warn(
+  { userId, action, remaining: 0 },
+  'Rate limit exceeded'
+);
+```
+
+### Track Cache Hit Rate
+
+```typescript
+const hits = await redis.get('cache:hits');
+const misses = await redis.get('cache:misses');
+const hitRate = (parseInt(hits) / (parseInt(hits) + parseInt(misses))) * 100;
+
+logger.info({ hitRate }, 'Cache performance');
+```
+
+### Alert on High Redis Latency
+
+```typescript
+const start = Date.now();
+await redis.get(key);
+const latency = Date.now() - start;
+
+if (latency > 100) {
+  logger.warn({ latency, key }, 'High Redis latency');
+}
+```
+
+## Troubleshooting
+
+### Permission Cache Not Updating
+
+If users aren't being added/removed:
+1. Verify `OPT_IN_CHANNEL` is set correctly
+2. Check bot has `channels:read` scope
+3. Ensure bot is in the opt-in channel
+4. Look for errors in `buildCache` logs
+
+### Redis Connection Errors
+
+If Redis is unreachable:
+1. Verify `REDIS_URL` is correct
+2. Check Redis is running: `redis-cli ping`
+3. Ensure firewall allows connections
+4. Check credentials if using authentication
+
+### Rate Limits Too Aggressive
+
+If legitimate users are being blocked:
+1. Increase limit thresholds
+2. Extend time windows
+3. Implement user-specific overrides
+4. Add admin bypass logic

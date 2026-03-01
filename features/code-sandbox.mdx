@@ -1,0 +1,344 @@
+---
+title: Code Sandbox
+description: Persistent E2B code execution environment with Pi agent integration
+---
+
+## Overview
+
+Gorkie's code sandbox feature provides a persistent Linux environment powered by E2B Code Interpreter. Each Slack thread gets its own sandbox session that maintains state across multiple code execution requests.
+
+The sandbox runs the **Pi coding agent**, allowing Gorkie to execute code, process files, install packages, and perform complex data analysis tasks.
+
+## How It Works
+
+### Sandbox Tool
+
+From `server/lib/ai/tools/chat/sandbox.ts:21-39`:
+
+```typescript
+export const sandbox = ({
+  context,
+  files,
+  stream,
+}: {
+  context: SlackMessageContext;
+  files?: SlackFile[];
+  stream: Stream;
+}) =>
+  tool({
+    description:
+      'Delegate a task to the sandbox runtime for code execution, file processing, or data analysis. The sandbox maintains persistent state across calls in this conversation, files, installed packages, written code, and previous results are all preserved. Reference prior work directly without re-explaining it.',
+    inputSchema: z.object({
+      task: z
+        .string()
+        .describe(
+          'A clear description of what to accomplish. The sandbox remembers all previous work in this thread, files, code, and context from earlier runs are available. Reference them directly.'
+        ),
+    }),
+    // ... execution logic
+  });
+```
+
+<Note>
+  Each thread has ONE persistent sandbox. Files, packages, and code from previous runs remain available. You don't need to re-upload files or reinstall packages.
+</Note>
+
+## Persistent Sessions
+
+### Session Per Thread
+
+Gorkie creates one sandbox per Slack thread, stored in the database.
+
+From `server/db/schema.ts:3-26`:
+
+```typescript
+export const sandboxSessions = pgTable(
+  'sandbox_sessions',
+  {
+    threadId: text('thread_id').primaryKey(),
+    sandboxId: text('sandbox_id').notNull(),
+    sessionId: text('session_id').notNull(),
+    status: text('status').notNull().default('creating'),
+    pausedAt: timestamp('paused_at', { withTimezone: true }),
+    resumedAt: timestamp('resumed_at', { withTimezone: true }),
+    destroyedAt: timestamp('destroyed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  // ... indexes
+);
+```
+
+### Session Lifecycle
+
+From `server/lib/sandbox/session.ts:130-161`:
+
+```typescript
+export async function resolveSession(
+  context: SlackMessageContext
+): Promise<ResolvedSandboxSession> {
+  const threadId = getContextId(context);
+  const existing = await getByThread(threadId);
+
+  if (!existing) {
+    return createSandbox(context, threadId);
+  }
+
+  await updateStatus(threadId, 'resuming');
+
+  try {
+    return await resumeSandbox(
+      threadId,
+      existing.sandboxId,
+      existing.sessionId
+    ).catch((error: unknown) => {
+      if (isMissingSandboxError(error)) {
+        return createSandbox(context, threadId);
+      }
+      throw error;
+    });
+  } catch (error) {
+    logger.warn(
+      { ...toLogError(error), threadId },
+      '[sandbox] Failed to resume, creating new sandbox'
+    );
+    await updateStatus(threadId, 'error');
+    throw error;
+  }
+}
+```
+
+**Session states:**
+- `creating` - Sandbox is being created
+- `active` - Sandbox is running
+- `paused` - Sandbox is paused (auto-pause in production)
+- `resuming` - Sandbox is being resumed from pause
+- `error` - Something went wrong
+
+<Tip>
+  In production, sandboxes auto-pause after use to save resources. They automatically resume when needed.
+</Tip>
+
+## Preinstalled Tools
+
+The sandbox template (`gorkie-sandbox:1.1.0`) comes with essential tools preinstalled:
+
+### System Tools
+
+- **fd** - Fast file finder (better than `find`)
+- **ripgrep (rg)** - Fast text search (better than `grep`)
+- **ImageMagick** - Image processing and manipulation
+- **FFmpeg** - Video and audio processing
+
+### Python Tools
+
+- **pip** - Python package installer
+- **Pillow** - Python image processing library
+
+These tools are available immediately without installation. The Pi agent knows how to use them effectively.
+
+## Configuration
+
+From `server/config.ts:1-23`:
+
+```typescript
+export const sandbox = {
+  template: 'gorkie-sandbox:1.1.0',
+  timeoutMs: 10 * 60 * 1000,                    // 10 minutes
+  autoDeleteAfterMs: 7 * 24 * 60 * 60 * 1000,  // 7 days
+  janitorIntervalMs: 60 * 1000,                // 1 minute
+  rpc: {
+    commandTimeoutMs: 60_000,
+    startupTimeoutMs: 2 * 60 * 1000,
+  },
+  toolOutput: {
+    detailsMaxChars: 180,
+    titleMaxChars: 60,
+    outputMaxChars: 260,
+  },
+  runtime: {
+    workdir: '/home/user',
+    executionTimeoutMs: 20 * 60 * 1000,         // 20 minutes
+  },
+  attachments: {
+    maxBytes: 1_000_000_000,                    // 1 GB
+  },
+};
+```
+
+**Key limits:**
+- Sandbox timeout: 10 minutes of inactivity
+- Execution timeout: 20 minutes per task
+- Auto-delete: 7 days after creation
+- Max attachment size: 1 GB
+
+## Template Auto-Build
+
+Gorkie uses a custom E2B template that automatically builds on creation.
+
+From `server/lib/sandbox/session.ts:57-95`:
+
+```typescript
+async function createSandbox(
+  context: SlackMessageContext,
+  threadId: string
+): Promise<ResolvedSandboxSession> {
+  const template = config.template;
+
+  const sandbox = await Sandbox.betaCreate(template, {
+    apiKey: env.E2B_API_KEY,
+    timeoutMs: config.timeoutMs,
+    autoPause: true,
+    allowInternetAccess: true,
+    metadata: getSandboxMetadata(context, threadId),
+  });
+
+  await sandbox.setTimeout(config.timeoutMs);
+
+  try {
+    await configureAgent(sandbox, systemPrompt({ agent: 'sandbox', context }));
+    const client = await boot(sandbox);
+    const { sessionId } = await client.getState();
+
+    await upsert({
+      threadId,
+      sandboxId: sandbox.sandboxId,
+      sessionId,
+      status: 'active',
+    });
+    logger.info(
+      { threadId, sandboxId: sandbox.sandboxId, sessionId, template },
+      '[sandbox] Created sandbox'
+    );
+
+    return { client, sandbox };
+  } catch (error) {
+    await Sandbox.kill(sandbox.sandboxId, { apiKey: env.E2B_API_KEY }).catch(
+      () => null
+    );
+    throw error;
+  }
+}
+```
+
+### Agent Configuration
+
+The Pi agent is configured with system prompts, model settings, and custom tools (`server/lib/sandbox/config/index.ts:10-35`):
+
+```typescript
+export async function buildConfig(prompt: string): Promise<{
+  paths: string[];
+  files: SandboxBootstrapFile[];
+}> {
+  const piDir = `${config.runtime.workdir}/.pi`;
+  const agentDir = `${piDir}/agent`;
+  const extensionsDir = `${piDir}/extensions`;
+
+  const [settings, models, auth, toolsExtension] = await Promise.all([
+    readTemplate('./settings.json'),
+    readTemplate('./models.json'),
+    readTemplate('./auth.json'),
+    readTemplate('./extensions/tools.ts'),
+  ]);
+
+  return {
+    paths: [piDir, agentDir, extensionsDir],
+    files: [
+      { path: `${piDir}/SYSTEM.md`, content: prompt },
+      { path: `${agentDir}/settings.json`, content: settings },
+      { path: `${agentDir}/models.json`, content: models },
+      { path: `${agentDir}/auth.json`, content: auth },
+      { path: `${extensionsDir}/tools.ts`, content: toolsExtension },
+    ],
+  };
+}
+```
+
+## File Uploads
+
+Files attached to Slack messages are automatically synced to the sandbox.
+
+From `server/lib/ai/tools/chat/sandbox.ts:74-75`:
+
+```typescript
+const uploads = await syncAttachments(session.sandbox, context, files);
+const prompt = `${task}${uploads.length > 0 ? `\n\n<files>\n${JSON.stringify(uploads, null, 2)}\n</files>` : ''}`;
+```
+
+Uploaded files are listed in JSON format and included in the task prompt for the Pi agent.
+
+## Keep-Alive Mechanism
+
+The sandbox stays alive during long-running tasks.
+
+From `server/lib/ai/tools/chat/sandbox.ts:131-139`:
+
+```typescript
+const keepAlive = setInterval(() => {
+  keepSandboxAlive().catch((error: unknown) => {
+    logger.warn(
+      { ...toLogError(error), ctxId },
+      '[sandbox] Keep-alive failed'
+    );
+  });
+  enqueue(() => updateTask(stream, { taskId, status: 'in_progress' }));
+}, KEEP_ALIVE_INTERVAL_MS);
+```
+
+**Keep-alive features:**
+- Runs every 3 minutes (`KEEP_ALIVE_INTERVAL_MS`)
+- Extends timeout to at least 5 minutes remaining
+- Updates task status to show progress
+
+## Usage Examples
+
+### Code Execution
+
+```
+@gorkie write a Python script to analyze this CSV file and create a bar chart
+```
+
+Gorkie will:
+1. Use the sandbox tool
+2. Write the Python script
+3. Execute it with the uploaded CSV
+4. Generate the chart
+5. Upload the result back to Slack
+
+### Data Processing
+
+```
+@gorkie convert these images to PNG and resize them to 800x600
+```
+
+Gorkie will use ImageMagick in the sandbox to process all images.
+
+### Video Editing
+
+```
+@gorkie extract the audio from this video and convert it to MP3
+```
+
+Gorkie will use FFmpeg to extract and convert the audio.
+
+## Best Practices
+
+1. **Reference previous work** - The sandbox remembers everything in the thread
+2. **One thread per project** - Keep related work in the same thread
+3. **Be specific** - Clear instructions help the Pi agent work faster
+4. **Check file sizes** - Keep attachments under 1 GB
+
+<Tip>
+  The sandbox can install any Python package via pip, any Node package via npm, and run shell commands. Just ask!
+</Tip>
+
+## Related Features
+
+- [AI Chat](/features/ai-chat) - Gorkie's conversation capabilities
+- [Web Search](/features/web-search) - Search for information online
+- [Slack Integration](/features/slack-integration) - How Gorkie interacts with Slack

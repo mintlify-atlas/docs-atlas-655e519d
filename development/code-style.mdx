@@ -1,0 +1,429 @@
+---
+title: Code Style Guidelines
+description: Coding standards and conventions for Gorkie Slack bot
+---
+
+## Formatting with Biome
+
+Gorkie uses [Biome](https://biomejs.dev/) for code formatting and linting. The configuration enforces:
+
+- **2 spaces** for indentation (not tabs)
+- **Single quotes** for strings
+- **Always include semicolons**
+
+### Auto-formatting
+
+Format your code before committing:
+
+```bash
+bun run check:write  # Auto-fix formatting and linting
+```
+
+The pre-commit hook will automatically run these checks.
+
+## TypeScript Conventions
+
+### Strict Mode
+
+The project uses TypeScript in strict mode with additional checks:
+
+```json
+{
+  "strict": true,
+  "noUncheckedIndexedAccess": true,
+  "noFallthroughCasesInSwitch": true
+}
+```
+
+### Type-Only Imports
+
+Use `import type` for type-only imports (enforced by `verbatimModuleSyntax`):
+
+```typescript
+// External packages first
+import { tool } from 'ai';
+import { z } from 'zod';
+
+// Then internal modules
+import logger from '~/lib/logger';
+import { getContextId } from '~/utils/context';
+
+// Type-only imports use 'import type'
+import type { SlackMessageContext, Stream } from '~/types';
+```
+
+### Path Alias
+
+The `~/` alias references the `server/` directory:
+
+```typescript
+import logger from '~/lib/logger';           // server/lib/logger.ts
+import type { Stream } from '~/types';        // server/types/
+import { getWeather } from '~/lib/ai/tools';  // server/lib/ai/tools/
+```
+
+## Import Patterns
+
+### Import Order
+
+1. External packages (from `node_modules`)
+2. Internal modules (using `~/` alias)
+3. Type-only imports last
+
+```typescript
+// 1. External packages
+import { tool } from 'ai';
+import { z } from 'zod';
+
+// 2. Internal modules
+import logger from '~/lib/logger';
+import { createTask, finishTask } from '~/lib/ai/utils/task';
+
+// 3. Type-only imports
+import type { SlackMessageContext, Stream } from '~/types';
+```
+
+### No Unused Imports
+
+Unused imports are treated as errors. Remove them:
+
+```typescript
+// Bad - 'z' is imported but never used
+import { tool } from 'ai';
+import { z } from 'zod';
+
+export const myTool = tool({ /* ... */ });
+
+// Good
+import { tool } from 'ai';
+
+export const myTool = tool({ /* ... */ });
+```
+
+## Naming Conventions
+
+### Files
+
+Use **kebab-case** for file names:
+
+```
+get-user-info.ts      ✓
+getUserInfo.ts        ✗
+GetUserInfo.ts        ✗
+```
+
+### Variables and Functions
+
+Use **camelCase**:
+
+```typescript
+const userId = 'U123456';              ✓
+const user_id = 'U123456';             ✗
+
+function getUserInfo() { /* ... */ }   ✓
+function get_user_info() { /* ... */ } ✗
+```
+
+### Types and Interfaces
+
+Use **PascalCase**:
+
+```typescript
+type SlackMessageContext = { /* ... */ };  ✓
+type slackMessageContext = { /* ... */ };  ✗
+
+interface ToolResult { /* ... */ }         ✓
+interface toolResult { /* ... */ }         ✗
+```
+
+### Exports
+
+Prefer **named exports** over default exports:
+
+```typescript
+// Good - named export
+export const reply = () => { /* ... */ };
+
+// Exception - logger uses default export
+export default logger;
+```
+
+## Type Definitions
+
+### Slack Event Properties
+
+Cast Slack event properties when accessing dynamic fields:
+
+```typescript
+const channelId = (ctx.event as { channel?: string }).channel;
+const userId = (ctx.event as { user?: string }).user;
+const threadTs = (ctx.event as { thread_ts?: string }).thread_ts;
+```
+
+### Explicit Return Types
+
+Use explicit return types for exported functions when they enhance clarity:
+
+```typescript
+// Good - clear return type
+export async function fetchUser(id: string): Promise<User | null> {
+  // ...
+}
+
+// Also good - return type is obvious
+export const isValidId = (id: string) => id.length > 0;
+```
+
+## Error Handling Patterns
+
+### Structured Error Logging
+
+Log errors with structured context data:
+
+```typescript
+import logger from '~/lib/logger';
+import { toLogError } from '~/utils/error';
+
+try {
+  await context.client.chat.postMessage({ /* ... */ });
+} catch (error) {
+  logger.error(
+    { 
+      ...toLogError(error),
+      channel: channelId,
+      messageTs 
+    },
+    'Failed to send message'
+  );
+}
+```
+
+### Return Structured Errors
+
+Return structured error objects from tools:
+
+```typescript
+import { errorMessage } from '~/utils/error';
+
+try {
+  // ... operation ...
+  return { success: true, data: result };
+} catch (error) {
+  return {
+    success: false,
+    error: errorMessage(error),
+  };
+}
+```
+
+### Early Returns
+
+Prefer early returns over nested conditionals:
+
+```typescript
+// Good
+if (!channelId) {
+  return { success: false, error: 'Missing channel ID' };
+}
+
+if (!messageTs) {
+  return { success: false, error: 'Missing timestamp' };
+}
+
+// ... continue with main logic
+
+// Bad
+if (channelId) {
+  if (messageTs) {
+    // ... deeply nested logic
+  }
+}
+```
+
+## Async Patterns
+
+### Consistent Async/Await
+
+Always use `async/await` instead of promise chains:
+
+```typescript
+// Good
+const user = await fetchUser(userId);
+const profile = await fetchProfile(user.id);
+
+// Bad
+fetchUser(userId)
+  .then(user => fetchProfile(user.id))
+  .then(profile => { /* ... */ });
+```
+
+### Parallel Operations
+
+Use `Promise.all` for independent parallel operations:
+
+```typescript
+// Good - runs in parallel
+const [user, channel, thread] = await Promise.all([
+  fetchUser(userId),
+  fetchChannel(channelId),
+  fetchThread(threadTs),
+]);
+
+// Bad - runs sequentially
+const user = await fetchUser(userId);
+const channel = await fetchChannel(channelId);
+const thread = await fetchThread(threadTs);
+```
+
+### Fire-and-Forget
+
+Use `void` prefix for fire-and-forget promises:
+
+```typescript
+void main().catch((error) => {
+  logger.error({ error }, 'Application failed');
+  process.exit(1);
+});
+```
+
+## Slack API Patterns
+
+### Always Check for Undefined
+
+Slack event properties may be undefined:
+
+```typescript
+const channelId = context.event.channel;
+const messageTs = context.event.ts;
+
+if (!(channelId && messageTs)) {
+  logger.warn({ channelId, messageTs }, 'Missing required fields');
+  return { success: false, error: 'Missing channel or timestamp' };
+}
+
+// Now safe to use channelId and messageTs
+```
+
+### Use WebClient from Context
+
+Always use the `WebClient` from the message context:
+
+```typescript
+await context.client.chat.postMessage({
+  channel: channelId,
+  text: 'Hello!',
+});
+```
+
+## Environment Variables
+
+### Define in env.ts
+
+All environment variables must be defined in `server/env.ts` using Zod schemas:
+
+```typescript
+import { createEnv } from '@t3-oss/env-core';
+import { z } from 'zod';
+
+export const env = createEnv({
+  server: {
+    MY_API_KEY: z.string().min(1),
+    MY_TIMEOUT: z.coerce.number().default(5000),
+  },
+  runtimeEnv: process.env,
+});
+```
+
+### Access via env Object
+
+Never use `process.env` directly. Import and use the validated `env` object:
+
+```typescript
+// Good
+import { env } from '~/env';
+const apiKey = env.MY_API_KEY;
+
+// Bad
+const apiKey = process.env.MY_API_KEY;
+```
+
+## Logging
+
+### Structured Logging
+
+Use the Pino logger with structured context:
+
+```typescript
+import logger from '~/lib/logger';
+
+// Include relevant context
+logger.info(
+  { channel: channelId, userId, type: 'reply' },
+  'Sent message'
+);
+
+logger.error(
+  { error, userId, operation: 'fetchUser' },
+  'Failed to fetch user'
+);
+```
+
+### Log Levels
+
+- `logger.debug()` - Verbose debugging information
+- `logger.info()` - General informational messages
+- `logger.warn()` - Warning messages for potential issues
+- `logger.error()` - Error messages for failures
+
+## Core Principles
+
+### Type Safety
+
+- Use explicit types for function parameters and return values
+- Prefer `unknown` over `any` when the type is genuinely unknown
+- Use const assertions (`as const`) for immutable values
+- Leverage TypeScript's type narrowing instead of type assertions
+
+### Modern JavaScript/TypeScript
+
+- Use arrow functions for callbacks and short functions
+- Prefer `for...of` loops over `.forEach()` and indexed `for` loops
+- Use optional chaining (`?.`) and nullish coalescing (`??`)
+- Prefer template literals over string concatenation
+- Use destructuring for object and array assignments
+- Use `const` by default, `let` only when reassignment is needed, never `var`
+
+### Clean Code
+
+- Keep functions focused with low cognitive complexity
+- Extract complex conditions into well-named boolean variables
+- Use early returns to reduce nesting
+- Prefer simple conditionals over nested ternary operators
+- Group related code together and separate concerns
+
+### Security
+
+- Validate and sanitize user input
+- Don't use `eval()` or assign directly to `document.cookie`
+- All bot responses must be SFW (enforced at multiple levels)
+
+### What Biome Can't Help With
+
+Focus on what the linter can't check:
+
+1. **Business logic correctness** - Biome can't validate your algorithms
+2. **Meaningful naming** - Use descriptive names for functions, variables, and types
+3. **Architecture decisions** - Component structure, data flow, and API design
+4. **Edge cases** - Handle boundary conditions and error states
+5. **Documentation** - Add comments for complex logic, but prefer self-documenting code
+
+## Before Committing
+
+Always run the checks before committing:
+
+```bash
+bun run check:write  # Fix formatting and linting
+bun run typecheck    # Verify types
+```
+
+The pre-commit hook will enforce these, but running them manually gives faster feedback.

@@ -1,0 +1,296 @@
+---
+title: Environment Variables
+description: Complete reference for all environment variables used in Gorkie
+---
+
+Gorkie uses environment variables for configuration. All variables are validated using Zod schemas defined in `server/env.ts`.
+
+## Setup
+
+Copy the `.env.example` file to `.env` in the source directory:
+
+```bash
+cp .env.example .env
+```
+
+Then populate the variables with your actual values.
+
+<Warning>
+  Never commit your `.env` file to version control. It contains sensitive credentials.
+</Warning>
+
+## Slack Configuration
+
+These variables configure the Slack app connection and behavior.
+
+<ParamField path="SLACK_BOT_TOKEN" type="string" required>
+  Bot User OAuth Token from OAuth & Permissions section in your Slack app.
+  
+  - Format: Starts with `xoxb-`
+  - Get it from: [https://api.slack.com/authentication/token-types](https://api.slack.com/authentication/token-types)
+  - Scopes needed: See `slack-manifest.json`
+  
+  ```bash
+  SLACK_BOT_TOKEN="xoxb-your-bot-token"
+  ```
+</ParamField>
+
+<ParamField path="SLACK_SIGNING_SECRET" type="string" required>
+  Signing secret used to verify requests from Slack.
+  
+  - Get it from: Basic Information section of your Slack app
+  - Used to validate webhook authenticity
+  
+  ```bash
+  SLACK_SIGNING_SECRET="your-signing-secret"
+  ```
+</ParamField>
+
+<ParamField path="SLACK_APP_TOKEN" type="string" optional>
+  App-level token for Socket Mode. Required if `SLACK_SOCKET_MODE=true`.
+  
+  - Format: Starts with `xapp-`
+  - Requires: `connections:write` scope
+  - Get it from: Basic Information > App-Level Tokens
+  - Docs: [https://api.slack.com/apis/connections/socket](https://api.slack.com/apis/connections/socket)
+  
+  ```bash
+  SLACK_APP_TOKEN="xapp-your-app-token"
+  ```
+</ParamField>
+
+<ParamField path="SLACK_SOCKET_MODE" type="boolean" default="false">
+  Enable Socket Mode for receiving events (recommended for local development).
+  
+  - `true`: Use WebSocket connection (requires `SLACK_APP_TOKEN`)
+  - `false`: Use HTTP endpoints (requires public URL and `PORT`)
+  - Default: `false`
+  
+  ```bash
+  SLACK_SOCKET_MODE=true
+  ```
+</ParamField>
+
+<ParamField path="PORT" type="number" default="3000">
+  HTTP port to listen on when Socket Mode is disabled.
+  
+  ```bash
+  PORT=3000
+  ```
+</ParamField>
+
+<ParamField path="AUTO_ADD_CHANNEL" type="string" optional>
+  Channel ID to automatically add users to when they first mention the bot.
+  
+  - Format: Slack channel ID (e.g., `C12345678`)
+  - Use case: Onboarding users to a community channel
+  
+  ```bash
+  AUTO_ADD_CHANNEL="C12345678"
+  ```
+</ParamField>
+
+<ParamField path="OPT_IN_CHANNEL" type="string" optional>
+  Channel ID that users must join before they can use Gorkie beyond simple pings.
+  
+  - Format: Slack channel ID (e.g., `C12345678`)
+  - Use case: Require opt-in for advanced features
+  
+  ```bash
+  OPT_IN_CHANNEL="C12345678"
+  ```
+</ParamField>
+
+## AI Providers
+
+Gorkie supports multiple AI model providers. Both are currently required.
+
+<ParamField path="HACKCLUB_API_KEY" type="string" required>
+  Primary AI model provider API key from Hack Club.
+  
+  - Format: Must start with `sk-hc-`
+  - Get it from: [https://ai.hackclub.com/](https://ai.hackclub.com/)
+  - Used as: Primary inference provider
+  
+  ```bash
+  HACKCLUB_API_KEY="sk-hc-your-hackclub-api-key"
+  ```
+</ParamField>
+
+<ParamField path="OPENROUTER_API_KEY" type="string" required>
+  Secondary AI model provider API key from OpenRouter.
+  
+  - Format: Must start with `sk-or-`
+  - Get it from: [https://openrouter.ai/keys](https://openrouter.ai/keys)
+  - Used as: Secondary inference provider
+  
+  ```bash
+  OPENROUTER_API_KEY="sk-or-your-openrouter-api-key"
+  ```
+</ParamField>
+
+## Database
+
+<ParamField path="DATABASE_URL" type="string" required>
+  PostgreSQL database connection string.
+  
+  - Format: `postgresql://user:password@host:5432/dbname?sslmode=require`
+  - Supports: Postgres, Neon, or any Postgres-compatible database
+  - Used for: Storing sandbox sessions and scheduled tasks
+  
+  ```bash
+  DATABASE_URL="postgresql://user:password@host:5432/dbname?sslmode=require"
+  ```
+  
+  See [Database Setup](/configuration/database-setup) for detailed instructions.
+</ParamField>
+
+## Redis
+
+<ParamField path="REDIS_URL" type="string" required>
+  Redis connection string for caching and rate limiting.
+  
+  - Format: `redis://host:port` or `rediss://host:port` (SSL)
+  - Local: `redis://localhost:6379`
+  - Cloud: Varies by provider (Upstash, Redis Cloud, etc.)
+  
+  ```bash
+  REDIS_URL="redis://localhost:6379"
+  ```
+  
+  See [Redis Setup](/configuration/redis-setup) for detailed instructions.
+</ParamField>
+
+## E2B Sandbox
+
+<ParamField path="E2B_API_KEY" type="string" required>
+  API key for E2B code execution sandboxes.
+  
+  - Get it from: [https://e2b.dev/](https://e2b.dev/)
+  - Used for: Secure code execution in isolated environments
+  - Template: Auto-builds `gorkie-sandbox:latest` if missing
+  
+  ```bash
+  E2B_API_KEY="your-e2b-api-key"
+  ```
+</ParamField>
+
+<ParamField path="AGENTMAIL_API_KEY" type="string" required>
+  API key for AgentMail service (used by sandbox environment).
+  
+  - Format: Must start with `am_`
+  - Used for: Email functionality in sandbox sessions
+  
+  ```bash
+  AGENTMAIL_API_KEY="am_your-agentmail-key"
+  ```
+</ParamField>
+
+## Web Search
+
+<ParamField path="EXA_API_KEY" type="string" required>
+  API key for Exa web search functionality.
+  
+  - Get it from: [https://exa.ai/docs/home](https://exa.ai/docs/home)
+  - Used for: AI-powered web searches
+  
+  ```bash
+  EXA_API_KEY="your-exa-api-key"
+  ```
+</ParamField>
+
+## Observability (Langfuse)
+
+Langfuse provides tracing and observability for AI model calls.
+
+<ParamField path="LANGFUSE_SECRET_KEY" type="string" optional>
+  Secret key for Langfuse tracing.
+  
+  - Format: Starts with `sk-lf-`
+  - Get it from: [https://langfuse.com/docs](https://langfuse.com/docs)
+  
+  ```bash
+  LANGFUSE_SECRET_KEY="sk-lf-..."
+  ```
+</ParamField>
+
+<ParamField path="LANGFUSE_PUBLIC_KEY" type="string" optional>
+  Public key for Langfuse tracing.
+  
+  - Format: Starts with `pk-lf-`
+  - Required with: `LANGFUSE_SECRET_KEY`
+  
+  ```bash
+  LANGFUSE_PUBLIC_KEY="pk-lf-..."
+  ```
+</ParamField>
+
+<ParamField path="LANGFUSE_BASEURL" type="string" optional default="https://cloud.langfuse.com">
+  Langfuse API base URL.
+  
+  - EU region: `https://cloud.langfuse.com` (default)
+  - US region: `https://us.cloud.langfuse.com`
+  - Self-hosted: Your instance URL
+  
+  ```bash
+  LANGFUSE_BASEURL="https://cloud.langfuse.com"
+  ```
+</ParamField>
+
+## Logging
+
+<ParamField path="LOG_LEVEL" type="string" default="info">
+  Logging verbosity level for Pino logger.
+  
+  - Options: `debug`, `info`, `warn`, `error`
+  - Production: Use `info` or `warn`
+  - Development: Use `debug` for detailed logs
+  
+  ```bash
+  LOG_LEVEL="info"
+  ```
+</ParamField>
+
+<ParamField path="LOG_DIRECTORY" type="string" default="logs">
+  Directory path for log file output.
+  
+  - Relative or absolute path
+  - Created automatically if it doesn't exist
+  
+  ```bash
+  LOG_DIRECTORY="logs"
+  ```
+</ParamField>
+
+## Runtime
+
+<ParamField path="NODE_ENV" type="string" default="development">
+  Runtime environment mode.
+  
+  - Options: `development`, `production`, `test`
+  - Affects: Logging format, error handling, and performance optimizations
+  
+  ```bash
+  NODE_ENV="production"
+  ```
+</ParamField>
+
+## Validation
+
+All environment variables are validated on startup using Zod schemas in `server/env.ts`. If any required variable is missing or invalid, the application will fail to start with a descriptive error message.
+
+```typescript
+// Example from server/env.ts
+export const env = createEnv({
+  server: {
+    SLACK_BOT_TOKEN: z.string().min(1),
+    OPENROUTER_API_KEY: z.string().min(1).startsWith('sk-or-'),
+    // ... more validations
+  },
+  runtimeEnv: process.env,
+});
+```
+
+<Note>
+  Access environment variables in code via `env.VARIABLE_NAME`, not `process.env.VARIABLE_NAME`. This ensures type safety and validation.
+</Note>

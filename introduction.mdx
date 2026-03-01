@@ -1,0 +1,76 @@
+---
+title: Introduction
+description: Meet Gorkie, your AI-powered Slack assistant
+---
+
+# Welcome to Gorkie
+
+Gorkie is a powerful AI Slack assistant built with the Vercel AI SDK that responds to mentions, direct messages, and thread replies with intelligent AI-generated responses. Built on modern technologies like Bun and TypeScript, Gorkie brings advanced AI capabilities directly into your Slack workspace.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="AI Chat" icon="comments">
+    Natural conversations with AI powered by state-of-the-art language models through OpenRouter and Hack Club AI
+  </Card>
+  
+  <Card title="Code Sandbox" icon="terminal">
+    Execute code, process files, and perform data analysis in a persistent E2B sandbox environment that maintains state across calls
+  </Card>
+  
+  <Card title="Web Search" icon="magnifying-glass">
+    Search the web using Exa for up-to-date information and research capabilities
+  </Card>
+  
+  <Card title="Scheduled Tasks" icon="clock">
+    Create recurring cron-scheduled tasks that run automatically and deliver results to DMs or channels
+  </Card>
+  
+  <Card title="Slack Integration" icon="slack">
+    Deep integration with Slack API for reactions, message history, user info, and channel management
+  </Card>
+  
+  <Card title="Image Generation" icon="image">
+    Generate AI images from prompts with support for editing and transforming existing images
+  </Card>
+</CardGroup>
+
+## Tech Stack
+
+Gorkie is built with best-in-class tools and technologies:
+
+- **[Vercel AI SDK](https://ai-sdk.dev/)** - AI model interactions and streaming responses
+- **[Slack Bolt SDK](https://docs.slack.dev/tools/bolt-js/)** - Slack app framework for events and interactions
+- **[E2B](https://e2b.dev/)** - Secure code execution sandboxes with persistent state
+- **[Exa](https://exa.ai/)** - Advanced web search capabilities
+- **[Redis](https://redis.io/)** - Rate limiting and caching
+- **[Postgres](https://www.postgresql.org/)** (Neon) - Database for scheduled tasks and persistence
+- **[Bun](https://bun.sh/)** - Fast JavaScript runtime and package manager
+- **[TypeScript](https://www.typescriptlang.org/)** - Type-safe development
+- **[Langfuse](https://langfuse.com/)** - AI observability and tracing
+
+## Get Started
+
+Ready to add Gorkie to your Slack workspace? Start with one of these guides:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running in minutes with our quick start guide
+  </Card>
+  
+  <Card title="Slack Setup" icon="slack" href="/slack-setup">
+    Detailed guide for configuring your Slack app
+  </Card>
+</CardGroup>
+
+## What Makes Gorkie Special?
+
+- **Persistent Sandbox Sessions**: The code sandbox maintains state across calls within a conversation, including files, installed packages, and previous results
+- **Advanced Scheduling**: Create recurring tasks with cron expressions that run automatically on your schedule
+- **Multi-Modal Capabilities**: Handle text, images, code execution, and web search all in one assistant
+- **Production-Ready**: Built with observability (Langfuse), rate limiting (Redis), and proper error handling
+- **Developer-Friendly**: Written in TypeScript with strict type safety and modern coding practices
+
+<Note>
+  Gorkie is based on the [Gork for Slack](https://github.com/techwithanirudh/gork-slack) project and built with the Vercel AI SDK.
+</Note>
